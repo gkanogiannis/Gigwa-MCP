@@ -1,0 +1,30 @@
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Credentials / environment (any .env / .env-<server> / .env.<x>, except the example)
+.env*
+!.env.example
+
+# Local data and analysis outputs (datasets, reference genomes, result CSVs)
+data/
+gigwa_results/
+
+# Dataset-specific one-off run scripts (kept local, not part of the public package)
+scripts_local/
+
+# Python build / cache artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

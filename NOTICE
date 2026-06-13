@@ -1,0 +1,6 @@
+Gigwa MCP Server
+Copyright 2026 Anestis Gkanogiannis <anestis@gkanogiannis.com>
+
+This product is licensed under the Apache License, Version 2.0 (see the LICENSE
+file). It drives Gigwa (https://github.com/SouthGreenPlatform/Gigwa2) over its
+REST API but does not include or redistribute Gigwa source code.

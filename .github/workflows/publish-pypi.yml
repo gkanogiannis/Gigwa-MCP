@@ -1,0 +1,69 @@
+name: Publish to PyPI
+
+# Manual-only release workflow. Trigger it from the Actions tab
+# ("Run workflow") once you have bumped `version` in pyproject.toml.
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Package index to publish to"
+        type: choice
+        options:
+          - pypi
+          - testpypi
+        default: pypi
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade build twine
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Verify package metadata
+        run: python -m twine check dist/*
+
+      - name: Upload built distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to ${{ inputs.target }}
+    needs: build
+    runs-on: ubuntu-latest
+    # Each environment can carry its own protection rules and is the scope a
+    # PyPI/TestPyPI trusted publisher is bound to.
+    environment: ${{ inputs.target }}
+    permissions:
+      id-token: write  # OIDC token for trusted publishing (no API token needed)
+    steps:
+      - name: Download built distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        if: ${{ inputs.target == 'pypi' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Publish to TestPyPI
+        if: ${{ inputs.target == 'testpypi' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/

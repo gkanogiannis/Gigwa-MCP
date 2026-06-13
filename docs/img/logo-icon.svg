@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="Gigwa MCP">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0E1B2A"/>
+      <stop offset="1" stop-color="#13314A"/>
+    </linearGradient>
+    <linearGradient id="strandA" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8BFFB8"/>
+      <stop offset="1" stop-color="#2EE6A6"/>
+    </linearGradient>
+    <linearGradient id="strandB" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4FD2FF"/>
+      <stop offset="1" stop-color="#2E8BFF"/>
+    </linearGradient>
+    <linearGradient id="rung" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7CFFB2"/>
+      <stop offset="1" stop-color="#39C6FF"/>
+    </linearGradient>
+    <linearGradient id="word" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8BFFB8"/>
+      <stop offset="1" stop-color="#4FD2FF"/>
+    </linearGradient>
+  </defs>
+  <rect x="6" y="6" width="108" height="108" rx="26" fill="url(#bg)"/>
+  <rect x="6.75" y="6.75" width="106.5" height="106.5" rx="25.25" fill="none" stroke="url(#rung)" stroke-width="1.5" opacity="0.55"/>
+  <g>
+      <line x1="74.85" y1="30.86" x2="45.15" y2="30.86" stroke="url(#rung)" stroke-width="2.4" stroke-linecap="round" opacity="0.85"/>
+      <line x1="68.24" y1="40.57" x2="51.76" y2="40.57" stroke="url(#rung)" stroke-width="2.4" stroke-linecap="round" opacity="0.85"/>
+      <line x1="41.48" y1="50.29" x2="78.52" y2="50.29" stroke="url(#rung)" stroke-width="2.4" stroke-linecap="round" opacity="0.85"/>
+      <line x1="60.00" y1="60.00" x2="60.00" y2="60.00" stroke="url(#rung)" stroke-width="2.4" stroke-linecap="round" opacity="0.85"/>
+      <line x1="78.52" y1="69.71" x2="41.48" y2="69.71" stroke="url(#rung)" stroke-width="2.4" stroke-linecap="round" opacity="0.85"/>
+      <line x1="51.76" y1="79.43" x2="68.24" y2="79.43" stroke="url(#rung)" stroke-width="2.4" stroke-linecap="round" opacity="0.85"/>
+      <line x1="45.15" y1="89.14" x2="74.85" y2="89.14" stroke="url(#rung)" stroke-width="2.4" stroke-linecap="round" opacity="0.85"/>
+      <path d="M 60.00 26.00 L 57.52 26.71 L 55.08 27.42 L 52.73 28.12 L 50.50 28.83 L 48.43 29.54 L 46.56 30.25 L 44.93 30.96 L 43.55 31.67 L 42.45 32.38 L 41.65 33.08 L 41.16 33.79 L 41.00 34.50 L 41.16 35.21 L 41.65 35.92 L 42.45 36.62 L 43.55 37.33 L 44.93 38.04 L 46.56 38.75 L 48.43 39.46 L 50.50 40.17 L 52.73 40.88 L 55.08 41.58 L 57.52 42.29 L 60.00 43.00 L 62.48 43.71 L 64.92 44.42 L 67.27 45.12 L 69.50 45.83 L 71.57 46.54 L 73.44 47.25 L 75.07 47.96 L 76.45 48.67 L 77.55 49.38 L 78.35 50.08 L 78.84 50.79 L 79.00 51.50 L 78.84 52.21 L 78.35 52.92 L 77.55 53.62 L 76.45 54.33 L 75.07 55.04 L 73.44 55.75 L 71.57 56.46 L 69.50 57.17 L 67.27 57.88 L 64.92 58.58 L 62.48 59.29 L 60.00 60.00 L 57.52 60.71 L 55.08 61.42 L 52.73 62.12 L 50.50 62.83 L 48.43 63.54 L 46.56 64.25 L 44.93 64.96 L 43.55 65.67 L 42.45 66.38 L 41.65 67.08 L 41.16 67.79 L 41.00 68.50 L 41.16 69.21 L 41.65 69.92 L 42.45 70.62 L 43.55 71.33 L 44.93 72.04 L 46.56 72.75 L 48.43 73.46 L 50.50 74.17 L 52.73 74.88 L 55.08 75.58 L 57.52 76.29 L 60.00 77.00 L 62.48 77.71 L 64.92 78.42 L 67.27 79.12 L 69.50 79.83 L 71.57 80.54 L 73.44 81.25 L 75.07 81.96 L 76.45 82.67 L 77.55 83.38 L 78.35 84.08 L 78.84 84.79 L 79.00 85.50 L 78.84 86.21 L 78.35 86.92 L 77.55 87.62 L 76.45 88.33 L 75.07 89.04 L 73.44 89.75 L 71.57 90.46 L 69.50 91.17 L 67.27 91.88 L 64.92 92.58 L 62.48 93.29 L 60.00 94.00" fill="none" stroke="url(#strandB)" stroke-width="5.2" stroke-linecap="round" opacity="0.95"/>
+      <path d="M 60.00 26.00 L 62.48 26.71 L 64.92 27.42 L 67.27 28.12 L 69.50 28.83 L 71.57 29.54 L 73.44 30.25 L 75.07 30.96 L 76.45 31.67 L 77.55 32.38 L 78.35 33.08 L 78.84 33.79 L 79.00 34.50 L 78.84 35.21 L 78.35 35.92 L 77.55 36.62 L 76.45 37.33 L 75.07 38.04 L 73.44 38.75 L 71.57 39.46 L 69.50 40.17 L 67.27 40.88 L 64.92 41.58 L 62.48 42.29 L 60.00 43.00 L 57.52 43.71 L 55.08 44.42 L 52.73 45.12 L 50.50 45.83 L 48.43 46.54 L 46.56 47.25 L 44.93 47.96 L 43.55 48.67 L 42.45 49.38 L 41.65 50.08 L 41.16 50.79 L 41.00 51.50 L 41.16 52.21 L 41.65 52.92 L 42.45 53.62 L 43.55 54.33 L 44.93 55.04 L 46.56 55.75 L 48.43 56.46 L 50.50 57.17 L 52.73 57.88 L 55.08 58.58 L 57.52 59.29 L 60.00 60.00 L 62.48 60.71 L 64.92 61.42 L 67.27 62.12 L 69.50 62.83 L 71.57 63.54 L 73.44 64.25 L 75.07 64.96 L 76.45 65.67 L 77.55 66.38 L 78.35 67.08 L 78.84 67.79 L 79.00 68.50 L 78.84 69.21 L 78.35 69.92 L 77.55 70.62 L 76.45 71.33 L 75.07 72.04 L 73.44 72.75 L 71.57 73.46 L 69.50 74.17 L 67.27 74.88 L 64.92 75.58 L 62.48 76.29 L 60.00 77.00 L 57.52 77.71 L 55.08 78.42 L 52.73 79.12 L 50.50 79.83 L 48.43 80.54 L 46.56 81.25 L 44.93 81.96 L 43.55 82.67 L 42.45 83.38 L 41.65 84.08 L 41.16 84.79 L 41.00 85.50 L 41.16 86.21 L 41.65 86.92 L 42.45 87.62 L 43.55 88.33 L 44.93 89.04 L 46.56 89.75 L 48.43 90.46 L 50.50 91.17 L 52.73 91.88 L 55.08 92.58 L 57.52 93.29 L 60.00 94.00" fill="none" stroke="url(#strandA)" stroke-width="5.2" stroke-linecap="round"/>
+      <circle cx="74.85" cy="30.86" r="4.15" fill="#7CFFB2"/>
+      <circle cx="45.15" cy="30.86" r="2.65" fill="#39C6FF"/>
+      <circle cx="68.24" cy="40.57" r="2.32" fill="#39C6FF"/>
+      <circle cx="51.76" cy="40.57" r="4.48" fill="#7CFFB2"/>
+      <circle cx="41.48" cy="50.29" r="3.13" fill="#39C6FF"/>
+      <circle cx="78.52" cy="50.29" r="3.67" fill="#7CFFB2"/>
+      <circle cx="60.00" cy="60.00" r="4.60" fill="#7CFFB2"/>
+      <circle cx="60.00" cy="60.00" r="2.20" fill="#39C6FF"/>
+      <circle cx="78.52" cy="69.71" r="3.13" fill="#39C6FF"/>
+      <circle cx="41.48" cy="69.71" r="3.67" fill="#7CFFB2"/>
+      <circle cx="51.76" cy="79.43" r="2.32" fill="#39C6FF"/>
+      <circle cx="68.24" cy="79.43" r="4.48" fill="#7CFFB2"/>
+      <circle cx="45.15" cy="89.14" r="4.15" fill="#7CFFB2"/>
+      <circle cx="74.85" cy="89.14" r="2.65" fill="#39C6FF"/>
+  </g>
+</svg>
