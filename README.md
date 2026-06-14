@@ -126,7 +126,8 @@ has two backends:
   tools on the same run.
 - **`method="allelematrix"`** : pages the genotype matrix via BrAPI
   `search/allelematrix`, honouring a server-side `max_markers` subset and sizing pages to
-  the server's per-response cell cap. Best for large datasets where a full export is
+  the server's per-response cell cap, and caches the result in-process per `(variant set,
+  caps)` so repeat tool calls reuse it. Best for large datasets where a full export is
   wasteful (see [Performance & scaling](#performance--scaling)).
 
 Variant sets are addressed by their BrAPI `variantSetDbId`, of the form
@@ -490,9 +491,6 @@ Phylo.draw(Phylo.read("gigwa_results/MYDB/tree.nwk", "newick"))
   CSVs locally. (Import tools do write to Gigwa.)
 - **No built-in plotting.** Tools emit CSV/Newick; use the
   [recipes above](#visualizing-results) (matplotlib/Bio.Phylo) to make figures.
-- **allelematrix has no session cache.** Unlike the VCF backend, the `allelematrix` path
-  re-fetches genotypes on each tool call, so running many tools on the same large set
-  re-downloads the sample each time.
 - **`diversity_structure` is a lightweight heuristic.** It is PCA + K-means with a
   pseudo-F (Calinski-Harabasz) K suggestion; there is no true admixture model. On weakly
   or continuously structured data pseudo-F tends toward `k_max`; the per-K table is the

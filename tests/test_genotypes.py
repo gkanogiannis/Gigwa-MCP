@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+
 from gigwa_mcp.analysis.genotypes import clear_cache, load_genotypes
 
 VCF = "\n".join([
@@ -110,9 +112,13 @@ class FakeAMClient:
         1: (["m§chr2§50"], [["0/1", "1", "."]]),
     }
 
+    def __init__(self):
+        self.calls = 0
+
     def search_allelematrix(self, vs, *, variant_page=0, variant_page_size=5000,
                             callset_page=0, callset_page_size=100000,
                             data_matrix_abbreviations=("GT",)):
+        self.calls += 1
         vids, matrix = self._PAGES[variant_page]
         return {
             "callSetDbIds": ["S1", "S2", "S3"],
@@ -147,3 +153,38 @@ def test_load_via_allelematrix():
 def test_allelematrix_max_markers_caps_pages():
     gm = load_genotypes(FakeAMClient(), "VS§1§run", method="allelematrix", max_markers=2)
     assert gm.n_variants == 2  # only the first variant page pulled
+
+
+def test_allelematrix_is_session_cached():
+    clear_cache()
+    client = FakeAMClient()
+
+    first = load_genotypes(client, "VS§1§run", method="allelematrix")
+    calls_after_first = client.calls
+    assert calls_after_first > 0
+
+    # Identical params -> cache hit: same matrix, no further client calls.
+    second = load_genotypes(client, "VS§1§run", method="allelematrix")
+    assert client.calls == calls_after_first
+    assert second is first
+    np.testing.assert_array_equal(np.asarray(second.gt), np.asarray(first.gt))
+
+    # Different cap -> distinct key -> re-fetch.
+    load_genotypes(client, "VS§1§run", method="allelematrix", max_markers=2)
+    assert client.calls > calls_after_first
+
+    # clear_cache() forces a re-fetch on identical params.
+    calls_before_clear = client.calls
+    clear_cache()
+    load_genotypes(client, "VS§1§run", method="allelematrix")
+    assert client.calls > calls_before_clear
+
+
+def test_allelematrix_use_cache_false_bypasses_cache():
+    clear_cache()
+    client = FakeAMClient()
+    load_genotypes(client, "VS§1§run", method="allelematrix", use_cache=False)
+    calls_after_first = client.calls
+    # No store, so a second uncached call re-fetches.
+    load_genotypes(client, "VS§1§run", method="allelematrix", use_cache=False)
+    assert client.calls > calls_after_first

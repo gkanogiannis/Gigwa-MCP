@@ -3,8 +3,11 @@
 Primary path is VCF export (`GigwaClient.export_variantset_vcf`) parsed with
 scikit-allel. The exported VCF is cached on disk and the parsed matrix is cached
 in-process, so running several analysis tools over one variant set downloads and
-parses it only once. VCF sample IDs are Gigwa callset DbIds (``MODULE§N``); we map
-them to accession names via ``GigwaClient.search_callsets``.
+parses it only once. The alternative paged ``search/allelematrix`` path is likewise
+session-cached (keyed by the variant set plus its caps), so a sequence of tools over
+the same large set issues the paged HTTP round-trips only once. VCF sample IDs are
+Gigwa callset DbIds (``MODULE§N``); we map them to accession names via
+``GigwaClient.search_callsets``.
 """
 
 from __future__ import annotations
@@ -21,8 +24,13 @@ import numpy as np
 from ..client import GigwaClient
 from ..errors import GigwaAPIError, GigwaError
 
-# In-process cache of the full (un-subsampled) matrix, keyed by variantSetDbId.
+# In-process cache of the full (un-subsampled) VCF-path matrix, keyed by variantSetDbId.
 _SESSION_CACHE: dict[str, "GenotypeMatrix"] = {}
+
+# In-process cache of allelematrix-path matrices. Keyed by the params that determine the
+# result — (variantSetDbId, max_markers, max_samples, with_depth) — since the caps are
+# applied server-side, so the same set under different caps is a different matrix.
+_AM_SESSION_CACHE: dict[tuple, "GenotypeMatrix"] = {}
 
 
 def _safe_name(value: str) -> str:
@@ -368,14 +376,22 @@ def load_genotypes(
     scikit-allel and caches it in-process; ``max_markers`` then returns an
     evenly-spaced subsample. ``method="allelematrix"`` pulls genotypes via paged
     BrAPI ``search/allelematrix`` instead — useful for subset/scale extraction
-    (honours ``max_markers`` and ``max_samples`` server-side); it is not
-    session-cached. ``max_samples`` only applies to the allelematrix path.
+    (honours ``max_markers`` and ``max_samples`` server-side); it is session-cached
+    per ``(variant set, max_markers, max_samples, with_depth)`` so repeat tool calls
+    with the same caps reuse the matrix. ``max_samples`` only applies to the
+    allelematrix path.
     """
     if method == "allelematrix":
-        return _load_via_allelematrix(
-            client, variant_set_db_id, max_markers=max_markers,
-            max_samples=max_samples, with_depth=with_depth,
-        )
+        key = (variant_set_db_id, max_markers, max_samples, with_depth)
+        gm = _AM_SESSION_CACHE.get(key) if use_cache else None
+        if gm is None:
+            gm = _load_via_allelematrix(
+                client, variant_set_db_id, max_markers=max_markers,
+                max_samples=max_samples, with_depth=with_depth,
+            )
+            if use_cache:
+                _AM_SESSION_CACHE[key] = gm
+        return gm
 
     full = _SESSION_CACHE.get(variant_set_db_id) if use_cache else None
     if full is None:
@@ -389,3 +405,4 @@ def load_genotypes(
 
 def clear_cache() -> None:
     _SESSION_CACHE.clear()
+    _AM_SESSION_CACHE.clear()
