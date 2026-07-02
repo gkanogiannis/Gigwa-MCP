@@ -239,6 +239,58 @@ server. You do it once, with a single command without editting any files by hand
 > absolute path (`"command": "/home/you/.local/bin/uvx"`), or avoid `uvx` entirely by
 > `pipx install gigwa-mcp` and using `gigwa-mcp` as the `command`.
 
+### Run with Docker
+
+Prefer a container instead of `uvx`/`pipx`? Build the image once and let your MCP client
+launch it. The server speaks stdio, so the client starts it with `docker run -i` the same
+way it would start `uvx gigwa-mcp`.
+
+**Build:**
+
+```bash
+docker build -t gigwa-mcp .
+```
+
+**MCP client config** (Claude Desktop / Claude Code) — use `docker` as the command:
+
+```json
+{
+  "mcpServers": {
+    "gigwa": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "GIGWA_URL", "-e", "GIGWA_USER", "-e", "GIGWA_PASS",
+        "-v", "/host/data:/data",
+        "gigwa-mcp"
+      ],
+      "env": {
+        "GIGWA_URL": "http://host.docker.internal:8080/gigwa",
+        "GIGWA_USER": "your_user",
+        "GIGWA_PASS": "your_password"
+      }
+    }
+  }
+}
+```
+
+- `-i` is required (stdio); `--rm` cleans up the container on exit.
+- The bare `-e GIGWA_URL` form forwards each value from the `env` block above into the
+  container, so credentials stay in your client config, not in the image.
+
+**Files (volume mount).** Mount a host directory at `/data` (the container's working
+directory). Put import inputs there and reference them by their in-container path, e.g.
+`/data/report_snps.xlsx` and `/data/reference.sr.mmi`. Analysis outputs are written to
+`/data/gigwa_results/<module>/`, which appears in your mounted host directory.
+
+**Reaching Gigwa.** A Gigwa running on your host is *not* at `localhost` from inside the
+container:
+
+- **macOS / Windows:** use `http://host.docker.internal:8080/gigwa` (works out of the box).
+- **Linux:** add `"--add-host=host.docker.internal:host-gateway"` to `args` and use the
+  same URL, or use `"--network", "host"` and point `GIGWA_URL` at `http://localhost:8080/gigwa`.
+- **Remote Gigwa:** just set `GIGWA_URL` to its address — no extra networking flags needed.
+
 ## Configuration
 
 Connection settings come from the environment, optionally seeded from a `.env` file in
