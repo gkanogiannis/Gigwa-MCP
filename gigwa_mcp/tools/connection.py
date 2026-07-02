@@ -26,6 +26,14 @@ def gigwa_server_info() -> str:
         f"User: {client.config.username}",
         "Authentication: OK",
     ]
+    # Best-effort: report server-side user identity / roles when the build supports it.
+    info = client.user_info()
+    if info:
+        roles = info.get("authorities") or info.get("roles") or info.get("permissions")
+        if isinstance(roles, (list, tuple)) and roles:
+            lines.append("Roles: " + ", ".join(str(r) for r in roles))
+        if info.get("administrator") or info.get("admin"):
+            lines.append("Administrator: yes")
     return "\n".join(lines)
 
 

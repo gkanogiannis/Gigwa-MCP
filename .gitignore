@@ -28,3 +28,6 @@ dist/
 .vscode/
 .idea/
 .DS_Store
+
+# Local, non-tracked docs / archived handoffs
+.local_docs/

@@ -23,6 +23,7 @@ def diversity_summary(
     variant_set_db_id: str,
     max_markers: int | None = None,
     method: str = "vcf",
+    region: str | None = None,
     output_dir: str | None = None,
 ) -> str:
     """Per-marker diversity statistics (MAF, He, Ho, PIC) and dataset means.
@@ -32,7 +33,7 @@ def diversity_summary(
     pass ``method="allelematrix"`` + ``max_markers`` to sample server-side.
     """
     client = get_client()
-    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method)
+    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method, region=region)
     ac = gm.gt.count_alleles()
     maf_v = stats.maf(ac)
     he = stats.expected_heterozygosity(ac)
@@ -82,6 +83,7 @@ def diversity_pca(
     group_column: str | None = None,
     id_column: str = "individual",
     method: str = "vcf",
+    region: str | None = None,
     output_dir: str | None = None,
 ) -> str:
     """Principal component analysis of population structure.
@@ -94,7 +96,7 @@ def diversity_pca(
     sets pass ``method="allelematrix"`` + ``max_markers`` to avoid a full VCF export.
     """
     client = get_client()
-    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method)
+    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method, region=region)
     gn = stats.imputed_alt_counts(gm.gt, drop_invariant=True)
     if gn.shape[0] < 2:
         return f"Not enough polymorphic markers for PCA in {variant_set_db_id}."
@@ -151,6 +153,7 @@ def diversity_kinship(
     max_markers: int | None = None,
     top_pairs: int = 15,
     method: str = "vcf",
+    region: str | None = None,
     output_dir: str | None = None,
 ) -> str:
     """VanRaden genomic relationship (kinship) matrix.
@@ -161,7 +164,7 @@ def diversity_kinship(
     ``method="allelematrix"`` + ``max_markers`` to avoid a full VCF export.
     """
     client = get_client()
-    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method)
+    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method, region=region)
     dosage = stats.alt_dosage(gm.gt)
     grm = stats.vanraden_grm(dosage)
 
@@ -235,6 +238,7 @@ def diversity_fst(
     id_column: str = "individual",
     max_markers: int | None = None,
     method: str = "vcf",
+    region: str | None = None,
     output_dir: str | None = None,
 ) -> str:
     """Pairwise Weir & Cockerham Fst between groups of samples.
@@ -251,7 +255,7 @@ def diversity_fst(
     Gigwa 2.12 build.)
     """
     client = get_client()
-    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method)
+    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method, region=region)
     if groups_json:
         groups = _resolve_groups(gm, groups_json)
     elif metadata_tsv and group_column:
@@ -299,6 +303,7 @@ def diversity_by_group(
     id_column: str = "individual",
     max_markers: int | None = None,
     method: str = "vcf",
+    region: str | None = None,
     output_dir: str | None = None,
 ) -> str:
     """Per-population diversity: He, Ho, Fis, MAF, % polymorphic, allelic richness.
@@ -311,7 +316,7 @@ def diversity_by_group(
     ``diversity_by_group.csv``.
     """
     client = get_client()
-    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method)
+    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method, region=region)
     if groups_json:
         groups = _resolve_groups(gm, groups_json)
     elif metadata_tsv and group_column:
@@ -372,6 +377,7 @@ def diversity_core_collection(
     fraction: float = 0.1,
     max_markers: int | None = None,
     method: str = "vcf",
+    region: str | None = None,
     output_dir: str | None = None,
 ) -> str:
     """Select a core collection that maximises captured allelic diversity.
@@ -383,7 +389,7 @@ def diversity_core_collection(
     fraction of total allelic diversity the core captures.
     """
     client = get_client()
-    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method)
+    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method, region=region)
     presence = genebank.allele_presence(gm.gt)
     total_units = int(presence.any(axis=0).sum())  # alleles present in ≥1 accession
     k = int(size) if size else max(1, int(round(fraction * gm.n_samples)))
@@ -423,6 +429,7 @@ def diversity_structure(
     k_max: int = 10,
     max_markers: int | None = None,
     method: str = "vcf",
+    region: str | None = None,
     output_dir: str | None = None,
 ) -> str:
     """Lightweight population-structure clustering (PCA + K-means, in-Python).
@@ -437,7 +444,7 @@ def diversity_structure(
     from scipy.cluster.vq import kmeans2
 
     client = get_client()
-    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method)
+    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method, region=region)
     gn = stats.imputed_alt_counts(gm.gt, drop_invariant=True)
     if gn.shape[0] < 2 or gm.n_samples < 4:
         return f"Not enough polymorphic markers / samples for structure in {variant_set_db_id}."
@@ -499,6 +506,7 @@ def diversity_tree(
     variant_set_db_id: str,
     max_markers: int | None = 5000,
     method: str = "vcf",
+    region: str | None = None,
     output_dir: str | None = None,
 ) -> str:
     """UPGMA dendrogram of accessions from IBS allele-sharing distance (Newick).
@@ -508,7 +516,7 @@ def diversity_tree(
     subsampling (``max_markers``) keeps it tractable on large sets.
     """
     client = get_client()
-    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method)
+    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method, region=region)
     sim = stats.ibs_similarity(stats.alt_dosage(gm.gt))
     dist = 1.0 - sim
     newick = genebank.upgma_newick(dist, list(gm.sample_names))

@@ -112,6 +112,20 @@ class GenotypeMatrix:
     def n_samples(self) -> int:
         return self.gt.shape[1]
 
+    def select(self, mask: np.ndarray) -> "GenotypeMatrix":
+        """Return a copy keeping only the variants where *mask* is True."""
+        return GenotypeMatrix(
+            gt=allel.GenotypeArray(self.gt[mask]),
+            variant_ids=self.variant_ids[mask],
+            chrom=self.chrom[mask],
+            pos=self.pos[mask],
+            sample_ids=self.sample_ids,
+            sample_names=self.sample_names,
+            variant_set_db_id=self.variant_set_db_id,
+            depth_present=self.depth_present,
+            depth_all_zero=self.depth_all_zero,
+        )
+
     def subsample_markers(self, max_markers: int) -> "GenotypeMatrix":
         if self.n_variants <= max_markers:
             return self
@@ -359,6 +373,39 @@ def _load_via_allelematrix(
     )
 
 
+def parse_region(region: str) -> tuple[str, int | None, int | None]:
+    """Parse ``"chrom"`` or ``"chrom:start-end"`` into ``(chrom, start, end)``.
+
+    Positions are 1-based inclusive; commas in the numbers are tolerated. Either bound may
+    be omitted (``"chr1:5000-"`` or ``"chr1:-9000"``).
+    """
+    if ":" not in region:
+        return region, None, None
+    chrom, span = region.rsplit(":", 1)
+    start = end = None
+    if "-" in span:
+        a, b = span.split("-", 1)
+        start = int(a.replace(",", "")) if a.strip() else None
+        end = int(b.replace(",", "")) if b.strip() else None
+    elif span.strip():
+        start = int(span.replace(",", ""))
+    return chrom, start, end
+
+
+def _apply_region(gm: GenotypeMatrix, region: str | None) -> GenotypeMatrix:
+    """Filter a matrix to a genomic ``region`` (post-load); no-op when region is None."""
+    if not region:
+        return gm
+    chrom, start, end = parse_region(region)
+    mask = gm.chrom.astype(str) == str(chrom)
+    pos = gm.pos.astype(np.int64)
+    if start is not None:
+        mask &= pos >= start
+    if end is not None:
+        mask &= pos <= end
+    return gm.select(mask)
+
+
 def load_genotypes(
     client: GigwaClient,
     variant_set_db_id: str,
@@ -369,6 +416,7 @@ def load_genotypes(
     cache_dir: str | Path | None = None,
     use_cache: bool = True,
     method: str = "vcf",
+    region: str | None = None,
 ) -> GenotypeMatrix:
     """Load a variant set's genotypes as a :class:`GenotypeMatrix`.
 
@@ -380,6 +428,10 @@ def load_genotypes(
     per ``(variant set, max_markers, max_samples, with_depth)`` so repeat tool calls
     with the same caps reuse the matrix. ``max_samples`` only applies to the
     allelematrix path.
+
+    ``region`` (``"chrom"`` or ``"chrom:start-end"``, 1-based) restricts the matrix to a
+    genomic window; it is applied to the (cached) full matrix before any ``max_markers``
+    subsample, so subsampling then draws from within the window.
     """
     if method == "allelematrix":
         key = (variant_set_db_id, max_markers, max_samples, with_depth)
@@ -391,16 +443,17 @@ def load_genotypes(
             )
             if use_cache:
                 _AM_SESSION_CACHE[key] = gm
-        return gm
+        return _apply_region(gm, region)
 
     full = _SESSION_CACHE.get(variant_set_db_id) if use_cache else None
     if full is None:
         full = _download_and_parse(client, variant_set_db_id, cache_dir)
         if use_cache:
             _SESSION_CACHE[variant_set_db_id] = full
+    gm = _apply_region(full, region)
     if max_markers:
-        return full.subsample_markers(max_markers)
-    return full
+        return gm.subsample_markers(max_markers)
+    return gm
 
 
 def clear_cache() -> None:

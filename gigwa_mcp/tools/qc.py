@@ -31,6 +31,7 @@ def qc_call_rate(
     min_marker_call_rate: float = 0.5,
     max_markers: int | None = None,
     method: str = "vcf",
+    region: str | None = None,
     output_dir: str | None = None,
 ) -> str:
     """Per-sample and per-marker call rate (missingness) QC for a variant set.
@@ -41,9 +42,11 @@ def qc_call_rate(
     BrAPI variantSetDbId (from ``list_content`` / BrAPI variantsets). For large
     production sets pass ``method="allelematrix"`` with ``max_markers`` (e.g. 20000)
     to estimate from a server-side marker subset instead of a full VCF export.
+    ``region`` (``"chrom"`` or ``"chrom:start-end"``, 1-based; from ``list_sequences``)
+    restricts the analysis to one genomic window — available on every QC/diversity tool.
     """
     client = get_client()
-    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method)
+    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method, region=region)
     cr_s = stats.call_rate_per_sample(gm.gt)
     cr_m = stats.call_rate_per_marker(gm.gt)
 
@@ -83,6 +86,7 @@ def qc_heterozygosity(
     outlier_sd: float = 3.0,
     max_markers: int | None = None,
     method: str = "vcf",
+    region: str | None = None,
     output_dir: str | None = None,
 ) -> str:
     """Per-sample observed heterozygosity QC, flagging outliers.
@@ -94,7 +98,7 @@ def qc_heterozygosity(
     ``max_markers`` to avoid a full VCF export.
     """
     client = get_client()
-    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method)
+    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method, region=region)
     ho, n_called = stats.heterozygosity_per_sample(gm.gt)
 
     mean, sd = float(np.nanmean(ho)), float(np.nanstd(ho))
@@ -160,6 +164,7 @@ def qc_duplicate_accessions(
     similarity_threshold: float = 0.95,
     max_markers: int | None = 5000,
     method: str = "vcf",
+    region: str | None = None,
     output_dir: str | None = None,
 ) -> str:
     """Detect duplicate / clonal accessions via pairwise identity-by-state (IBS).
@@ -172,7 +177,7 @@ def qc_duplicate_accessions(
     sets pass ``method="allelematrix"`` to fetch the marker subset without a full export.
     """
     client = get_client()
-    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method)
+    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method, region=region)
     dosage = stats.alt_dosage(gm.gt)
     sim = stats.ibs_similarity(dosage)
 
@@ -241,6 +246,7 @@ def qc_maf_filter(
     max_missing: float = 0.5,
     max_markers: int | None = None,
     method: str = "vcf",
+    region: str | None = None,
     output_dir: str | None = None,
 ) -> str:
     """Report markers that would be filtered by MAF / missingness (no changes applied).
@@ -251,7 +257,7 @@ def qc_maf_filter(
     For large sets pass ``method="allelematrix"`` + ``max_markers`` to sample server-side.
     """
     client = get_client()
-    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method)
+    gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method, region=region)
     ac = gm.gt.count_alleles()
     maf_v = stats.maf(ac)
     missing = 1.0 - stats.call_rate_per_marker(gm.gt)

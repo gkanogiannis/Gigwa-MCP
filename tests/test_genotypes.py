@@ -90,6 +90,28 @@ def test_subsample_markers(tmp_path):
     assert sub.n_samples == 2
 
 
+def test_parse_region():
+    from gigwa_mcp.analysis.genotypes import parse_region
+
+    assert parse_region("chr1") == ("chr1", None, None)
+    assert parse_region("chr1:100-200") == ("chr1", 100, 200)
+    assert parse_region("chr1:1,000-2,000") == ("chr1", 1000, 2000)
+    assert parse_region("chr1:500-") == ("chr1", 500, None)
+    assert parse_region("chr1:-900") == ("chr1", None, 900)
+
+
+def test_load_genotypes_region_filter(tmp_path):
+    clear_cache()
+    # VCF fixture has chrom "1" at pos 100 and 200.
+    gm = load_genotypes(FakeClient(), "VS§1§reg", cache_dir=tmp_path, region="1:150-250")
+    assert gm.n_variants == 1
+    assert int(gm.pos[0]) == 200
+
+    clear_cache()
+    none = load_genotypes(FakeClient(), "VS§1§reg2", cache_dir=tmp_path, region="2")
+    assert none.n_variants == 0
+
+
 # --- allelematrix extraction path -------------------------------------------
 
 def test_decode_gt_token():

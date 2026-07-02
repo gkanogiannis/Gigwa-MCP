@@ -16,7 +16,6 @@ dist/
 .ruff_cache/
 .git/
 .github/
-.claude/
 tests/
 docs/
 scripts/

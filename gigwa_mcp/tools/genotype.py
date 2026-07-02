@@ -265,3 +265,20 @@ def get_import_progress(progress_token: str) -> str:
             "been cleared, or has not started writing progress yet."
         )
     return status.summary()
+
+
+@mcp.tool()
+def abort_import(progress_token: str) -> str:
+    """Abort a running import (or other long process), given its progress token.
+
+    Asks Gigwa to cancel the process identified by ``progress_token`` (the token returned
+    by ``import_dartseq`` / ``import_vcf`` when run with ``wait=False``). Returns whether
+    the abort request was accepted; poll ``get_import_progress`` afterwards to confirm it
+    stopped.
+    """
+    client = get_client()
+    try:
+        client.abort(progress_token)
+    except Exception as exc:  # surface a clear message rather than a stack trace
+        return f"Abort request failed for token {progress_token}: {exc}"
+    return f"Abort requested for {progress_token}. Check get_import_progress to confirm."

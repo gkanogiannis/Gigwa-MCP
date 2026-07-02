@@ -35,6 +35,15 @@ def _bool(value: bool | None) -> str | None:
     return "true" if value else "false"
 
 
+# Gigwa's GA4GH ``/ga4gh/variants/search`` is stateful: a first POST in COUNT mode returns
+# the number of matching variants (and caches their ids server-side under a hash of the
+# query), then further POSTs in FETCH mode page through those variants. These are Gigwa's
+# GigwaSearchVariantsRequest ``searchMode`` values (verified live against 2.12-RELEASE and
+# 2.13-beta2: 0 = count only, 3 = return the variants).
+SEARCH_MODE_COUNT = 0
+SEARCH_MODE_FETCH = 3
+
+
 @dataclass
 class ProgressStatus:
     """A snapshot of a Gigwa async import job."""
@@ -458,3 +467,290 @@ class GigwaClient:
                     f"VCF export timed out after {timeout:.0f}s for {variant_set_db_id}."
                 )
             time.sleep(poll_interval)
+
+    # -- variant search / filtering (GA4GH) --------------------------------
+    @staticmethod
+    def _ga4gh_variant_set_id(variant_set_db_id: str) -> str:
+        """GA4GH's ``variantSetId`` is ``module§project`` — the BrAPI variantSetDbId with
+        its trailing ``§run`` segment dropped. Gigwa's GA4GH endpoints split this id
+        expecting exactly module+project and throw a NullPointerException on the full
+        three-part id, so we always normalise here."""
+        return "§".join(str(variant_set_db_id).split("§")[:2])
+
+    def _variant_search_body(
+        self,
+        variant_set_db_id: str,
+        *,
+        reference_name: str | None,
+        start: int | None,
+        end: int | None,
+        min_maf: float | None,
+        max_maf: float | None,
+        max_missing_data: float | None,
+        callset_ids: Sequence[str] | None,
+        search_mode: int,
+        page_size: int,
+        page_token: str,
+        get_gt: bool,
+    ) -> dict[str, Any]:
+        """Assemble a GigwaSearchVariantsRequest body, matching what the Gigwa web UI sends.
+
+        ``callSetIds`` selects the samples and is sent even when empty — ``[]`` means "all
+        individuals" and the endpoint rejects an omitted list (HTTP 400). ``reference_name``
+        + ``start``/``end`` filter by region server-side.
+
+        The genotype-stat filters (``min_maf``/``max_maf``/``max_missing_data``) are Gigwa
+        per-sample-group arrays. When any is set we build a single group (index 0) spanning
+        the whole selection and send the full set of one-element companion arrays the
+        server's genotype-filter path requires — an absent/short array makes it throw. Two
+        details verified against the UI + live server: MAF and missing-data go to Gigwa as
+        **percentages** (0–50 / 0–100), so the 0–1 fractions the tools take are scaled by
+        100; and ``discriminate`` must be ``[None]`` ("no discrimination") — a numeric value
+        makes Gigwa filter the group against itself and return nothing.
+        """
+        body: dict[str, Any] = {
+            "variantSetId": self._ga4gh_variant_set_id(variant_set_db_id),
+            "callSetIds": list(callset_ids) if callset_ids else [],
+            "searchMode": search_mode,
+            "getGT": get_gt,
+            "pageSize": page_size,
+            "pageToken": page_token,
+        }
+        if reference_name:
+            body["referenceName"] = reference_name
+        if start is not None:
+            body["start"] = int(start)
+        if end is not None:
+            body["end"] = int(end)
+        if min_maf is not None or max_maf is not None or max_missing_data is not None:
+            body.update(
+                {
+                    "discriminate": [None],
+                    "groupName": [""],
+                    "gtPattern": [""],
+                    "mostSameRatio": ["100"],
+                    "minMaf": [float(min_maf) * 100 if min_maf is not None else 0.0],
+                    "maxMaf": [float(max_maf) * 100 if max_maf is not None else 50.0],
+                    "minMissingData": [0.0],
+                    "maxMissingData": [
+                        float(max_missing_data) * 100 if max_missing_data is not None else 100.0
+                    ],
+                    "minHeZ": [0.0],
+                    "maxHeZ": [100.0],
+                    "annotationFieldThresholds": [{}],
+                    "additionalCallSetIds": [],
+                }
+            )
+        return body
+
+    def count_variants(
+        self,
+        variant_set_db_id: str,
+        *,
+        reference_name: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        min_maf: float | None = None,
+        max_maf: float | None = None,
+        max_missing_data: float | None = None,
+        callset_ids: Sequence[str] | None = None,
+    ) -> int:
+        """Count variants matching the given filters, server-side (no genotype data pulled)."""
+        body = self._variant_search_body(
+            variant_set_db_id,
+            reference_name=reference_name,
+            start=start,
+            end=end,
+            min_maf=min_maf,
+            max_maf=max_maf,
+            max_missing_data=max_missing_data,
+            callset_ids=callset_ids,
+            search_mode=SEARCH_MODE_COUNT,
+            page_size=0,
+            page_token="",
+            get_gt=False,
+        )
+        resp = self._check(
+            self.request("POST", "/ga4gh/variants/search", json_body=body), "variants/search"
+        )
+        try:
+            data = resp.json()
+        except ValueError:
+            return 0
+        return int(data.get("count") or 0)
+
+    def search_variants(
+        self,
+        variant_set_db_id: str,
+        *,
+        reference_name: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        min_maf: float | None = None,
+        max_maf: float | None = None,
+        max_missing_data: float | None = None,
+        callset_ids: Sequence[str] | None = None,
+        max_variants: int = 100000,
+        page_size: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Return the variants matching the filters (GA4GH Variant dicts; genotypes not fetched).
+
+        Pages through Gigwa's stateful GA4GH search until the match set is exhausted or
+        *max_variants* is reached. The initial COUNT-mode call primes the server-side match
+        set that the FETCH-mode pages then read. Each item carries at least ``variantDbId``/
+        ``id``, ``referenceName``, ``start``, ``referenceBases`` and ``alternateBases``.
+        """
+        common = dict(
+            reference_name=reference_name,
+            start=start,
+            end=end,
+            min_maf=min_maf,
+            max_maf=max_maf,
+            max_missing_data=max_missing_data,
+            callset_ids=callset_ids,
+        )
+        total = self.count_variants(variant_set_db_id, **common)
+        if total <= 0:
+            return []
+
+        out: list[dict[str, Any]] = []
+        page_token = "0"  # FETCH mode parses the token as an int; it must not be empty
+        cap = min(total, max_variants)
+        while len(out) < cap:
+            body = self._variant_search_body(
+                variant_set_db_id,
+                search_mode=SEARCH_MODE_FETCH,
+                page_size=page_size,
+                page_token=page_token,
+                get_gt=False,
+                **common,
+            )
+            resp = self._check(
+                self.request("POST", "/ga4gh/variants/search", json_body=body),
+                "variants/search",
+            )
+            data = resp.json()
+            variants = data.get("variants")
+            if variants is None:  # tolerate a BrAPI-style {"result": {"data": [...]}} shape
+                variants = (data.get("result") or {}).get("data") or []
+            if not variants:
+                break
+            out.extend(variants)
+            page_token = str(data.get("nextPageToken") or "")
+            if not page_token:
+                break
+        return out[:max_variants]
+
+    # -- sequences / references (GA4GH) ------------------------------------
+    def list_sequences(self, variant_set_db_id: str) -> list[dict[str, Any]]:
+        """List the reference sequences (chromosomes/contigs) of a variant set.
+
+        Uses GA4GH ``POST /ga4gh/references/search``. Each dict carries at least ``name``
+        and, when the server provides it, ``length``. Gigwa parses the ``module§project``
+        ``variantSetId`` to locate the project and needs the ``module`` as ``referenceSetId``;
+        sending only one of them makes it throw, so both are always included.
+        """
+        module = variant_set_db_id.split("§", 1)[0]
+        resp = self._check(
+            self.request(
+                "POST",
+                "/ga4gh/references/search",
+                json_body={
+                    "variantSetId": self._ga4gh_variant_set_id(variant_set_db_id),
+                    "referenceSetId": module,
+                },
+            ),
+            "references/search",
+        )
+        try:
+            data = resp.json()
+        except ValueError:
+            return []
+        refs = data.get("references")
+        if refs is None:
+            refs = (data.get("result") or {}).get("data") or []
+        return refs or []
+
+    # -- multi-format export ----------------------------------------------
+    def export_data(
+        self,
+        variant_set_db_id: str,
+        dest_path: str | Path,
+        *,
+        fmt: str = "VCF",
+        poll_interval: float = 2.0,
+        timeout: float = 1800.0,
+    ) -> Path:
+        """Export a whole variant set in *fmt* (VCF/PLINK/HAPMAP/FLAPJACK/DARWIN/...).
+
+        VCF goes through the async BrAPI export (:meth:`export_variantset_vcf`); other
+        formats use Gigwa's BrAPI per-format export endpoint, which is likewise async
+        (HTTP 202 while preparing, 200 with the payload once ready).
+        """
+        fmt_up = str(fmt).upper()
+        if fmt_up == "VCF":
+            return self.export_variantset_vcf(
+                variant_set_db_id, dest_path, poll_interval=poll_interval, timeout=timeout
+            )
+        dest_path = Path(dest_path)
+        quoted = urllib.parse.quote(variant_set_db_id, safe="")
+        path = f"/brapi/v2/variantsets/{quoted}/export/{fmt_up.lower()}"
+        deadline = time.monotonic() + timeout
+        while True:
+            resp = self.request("GET", path)
+            if resp.status_code == 200 and len(resp.content) > 64:
+                dest_path.write_bytes(resp.content)
+                return dest_path
+            if resp.status_code not in (200, 202):
+                raise GigwaAPIError(
+                    f"{fmt_up} export failed", status_code=resp.status_code, body=resp.text
+                )
+            if time.monotonic() >= deadline:
+                raise GigwaAPIError(
+                    f"{fmt_up} export timed out after {timeout:.0f}s for {variant_set_db_id}."
+                )
+            time.sleep(poll_interval)
+
+    # -- process control / user info --------------------------------------
+    def abort(self, token: str) -> bool:
+        """Ask Gigwa to abort the process identified by *token*. Returns True on success."""
+        resp = self.request("GET", "/gigwa/abortProcess", params={"processID": token})
+        if resp.status_code >= 400:
+            raise GigwaAPIError("abortProcess failed", status_code=resp.status_code, body=resp.text)
+        return True
+
+    def user_info(self) -> dict[str, Any]:
+        """Return the current user's info/permissions (``GET /gigwa/userInfo``)."""
+        resp = self.request("GET", "/gigwa/userInfo")
+        if resp.status_code >= 400:
+            return {}
+        try:
+            data = resp.json()
+        except ValueError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    # -- germplasm metadata (BrAPI) ---------------------------------------
+    def get_germplasm(self, variant_set_db_id: str) -> list[dict[str, Any]]:
+        """Fetch server-stored germplasm records (per-individual attributes) for a module.
+
+        Uses BrAPI ``POST /brapi/v2/search/germplasm`` filtered by program/study derived
+        from the module, falling back to the ``GET /brapi/v2/germplasm`` listing. Returns
+        an empty list when the build does not support it (some 2.12 builds 404 attribute
+        endpoints), mirroring the :meth:`list_variantsets` graceful-fallback pattern.
+        """
+        module = variant_set_db_id.split("§", 1)[0]
+        for method, path, body in (
+            ("POST", "/brapi/v2/search/germplasm", {"programDbIds": [module]}),
+            ("GET", "/brapi/v2/germplasm", None),
+        ):
+            try:
+                resp = self.request(method, path, json_body=body)
+                if resp.status_code >= 400:
+                    continue
+                data = (resp.json().get("result") or {}).get("data") or []
+            except (httpx.HTTPError, ValueError):
+                continue
+            if data:
+                return data
+        return []

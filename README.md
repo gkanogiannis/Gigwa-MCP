@@ -49,6 +49,7 @@ genebanks, but works with any Gigwa instance.
     - [Genomic positions (optional)](#genomic-positions-optional)
   - [Project layout](#project-layout)
   - [Testing](#testing)
+  - [Changelog](#changelog)
   - [License \& contributing](#license--contributing)
 
 ## Overview
@@ -79,6 +80,18 @@ never modify the data in Gigwa.
 | `validate_metadata` | Validate an individual-metadata TSV without importing |
 | `import_metadata` | Import per-individual attributes into a database |
 | `get_import_progress` | Poll a running import by its progress token |
+| `abort_import` | Cancel a running import (or other process) by its progress token |
+
+**Discovery, search & export (read-only)**
+
+| Tool | What it does |
+|------|--------------|
+| `list_variant_sets` | List every run with its exact BrAPI `variantSetDbId` (the id the analysis tools take) |
+| `list_sequences` | List the chromosomes/contigs of a variant set (valid `reference_name` values) |
+| `count_variants` | Count variants matching region / MAF / missing-data filters, server-side (no download) |
+| `search_variants` | Search variants server-side and write the matching list (`variant_search.csv`) |
+| `export_genotypes` | Export a variant set to a file — `VCF`/`PLINK`/`HAPMAP`/`FLAPJACK`/`DARWIN` |
+| `get_germplasm_metadata` | Pull server-stored per-individual attributes (`germplasm_metadata.csv`) |
 
 **QC & diversity (read-only)**
 
@@ -96,6 +109,9 @@ never modify the data in Gigwa.
 | `diversity_core_collection` | Greedy allele-coverage core: smallest accession set capturing the most diversity |
 | `diversity_structure` | Lightweight ancestry with PCA + K-means, pseudo-F suggests K (no ADMIXTURE binary) |
 | `diversity_tree` | UPGMA dendrogram of accessions from IBS distance, written as Newick (`tree.nwk`) |
+
+Every QC & diversity tool also accepts `region` (`"chrom"` or `"chrom:start-end"`, 1-based;
+from `list_sequences`) to restrict the analysis to one genomic window.
 
 **Import-quality audit**
 
@@ -371,9 +387,9 @@ More example prompts:
 ## Tool reference
 
 All variant-set tools take `variant_set_db_id` (`MODULE§projectNumber§run`). QC/diversity
-tools also accept `output_dir` (defaults to `./gigwa_results/<module>/`) and the scaling
-args `max_markers` / `method` (`"vcf"` | `"allelematrix"`); see
-[Performance & scaling](#performance--scaling).
+tools also accept `output_dir` (defaults to `./gigwa_results/<module>/`), the scaling
+args `max_markers` / `method` (`"vcf"` | `"allelematrix"`), and `region`
+(`"chrom"` / `"chrom:start-end"`); see [Performance & scaling](#performance--scaling).
 
 **Connection & import**
 
@@ -387,6 +403,18 @@ args `max_markers` / `method` (`"vcf"` | `"allelematrix"`); see
 | `validate_metadata` | `tsv_path`, `module`, `metadata_type="Individual"` | validation issues (no import) |
 | `import_metadata` | `tsv_path`, `module`, `metadata_type="Individual"` | imports per-individual attributes |
 | `get_import_progress` | `progress_token` | current async-job status |
+| `abort_import` | `progress_token` | requests cancellation of a running process |
+
+**Discovery, search & export**
+
+| Tool | Key arguments | Returns / writes |
+|------|---------------|------------------|
+| `list_variant_sets` | (none) | every run's exact `variantSetDbId` + counts |
+| `list_sequences` | `variant_set_db_id` | chromosomes/contigs (valid `reference_name`s) |
+| `count_variants` | `reference_name?`, `start?`, `end?`, `min_maf?`, `max_maf?`, `max_missing_data?` | server-side match count (no download) |
+| `search_variants` | same filters as `count_variants`, `max_variants=100000` | `variant_search.csv` (id/chrom/pos/ref/alt) |
+| `export_genotypes` | `output_path`, `format="VCF"` (`PLINK`/`HAPMAP`/`FLAPJACK`/`DARWIN`) | writes the export file |
+| `get_germplasm_metadata` | `variant_set_db_id` | `germplasm_metadata.csv` (server-stored attributes) |
 
 **QC & diversity** (output files listed in [Output files](#output-files))
 
@@ -460,6 +488,8 @@ Each analysis writes one or more CSVs (Newick for the tree) under
 | `structure_clusters.csv` | `diversity_structure` | per-sample cluster + PC coords |
 | `tree.nwk` | `diversity_tree` | UPGMA tree (Newick) |
 | `import_quality_scan.csv` | `audit_import_quality` | one row per run: status + diagnostics + reasons |
+| `variant_search.csv` | `search_variants` | matching variants (id, chrom, pos, ref, alt) |
+| `germplasm_metadata.csv` | `get_germplasm_metadata` | server-stored per-individual attributes |
 | `dartseq_positions.csv` | `map_dartseq_to_reference` | per-marker chrom/pos/strand/mapq/status |
 
 ## Visualizing results
@@ -652,6 +682,36 @@ mocked transport; `test_dartseq_convert.py` checks the conversion against synthe
 SNP/Silico fixtures; `test_stats.py` / `test_genebank.py` verify the pop-gen and genebank
 statistics against hand-computed values; `test_genotypes.py` exercises VCF parsing +
 callset-name mapping with a mock client. The suite needs no live Gigwa server.
+
+## Changelog
+
+### v1.2.0 — server-side search, filtered analysis & export
+
+Adds 7 tools (**21 → 28**) that surface more of the Gigwa REST API, plus a genomic-region
+filter on every analysis tool.
+
+- **Server-side variant search** (no full download): `count_variants` and `search_variants`
+  filter by genomic region, MAF range, and missing-data fraction via Gigwa's GA4GH
+  `variants/search`; `search_variants` writes `variant_search.csv`.
+- **Region-restricted analysis**: every QC & diversity tool now accepts
+  `region` (`"chrom"` or `"chrom:start-end"`, 1-based) to run on a single genomic window.
+- **Discovery & export**: `list_variant_sets` (exact `variantSetDbId`s), `list_sequences`
+  (chromosomes/contigs), and `export_genotypes` (VCF/PLINK/HAPMAP/FLAPJACK/DARWIN).
+- **Robustness**: `abort_import` (cancel a running process), `get_germplasm_metadata`
+  (pull server-stored per-individual attributes → `germplasm_metadata.csv`), and
+  `gigwa_server_info` now reports the server-side user roles when available.
+
+### v1.1.0 — Docker support
+
+- `Dockerfile` (multi-stage) and `.dockerignore` to build and run the server as a
+  container launched by an MCP client via `docker run -i`. See
+  [Run with Docker](#run-with-docker).
+
+### v1.0.0 — initial release
+
+- 21 tools: connection/inventory, DArTseq/VCF import (with optional reference anchoring)
+  and metadata import, read-only QC and diversity/population-structure analyses, and the
+  import-quality audit.
 
 ## License & contributing
 

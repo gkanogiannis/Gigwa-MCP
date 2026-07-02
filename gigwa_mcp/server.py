@@ -27,5 +27,6 @@ def get_client() -> GigwaClient:
 # Registering the tool modules attaches their @mcp.tool() functions to `mcp`.
 from .tools import connection, genotype, metadata  # noqa: E402,F401
 from .tools import qc, diversity, audit  # noqa: E402,F401
+from .tools import search  # noqa: E402,F401
 
 __all__ = ["mcp", "get_client"]
