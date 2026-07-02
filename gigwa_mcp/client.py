@@ -681,11 +681,15 @@ class GigwaClient:
         poll_interval: float = 2.0,
         timeout: float = 1800.0,
     ) -> Path:
-        """Export a whole variant set in *fmt* (VCF/PLINK/HAPMAP/FLAPJACK/DARWIN/...).
+        """Export a whole variant set in *fmt*.
 
-        VCF goes through the async BrAPI export (:meth:`export_variantset_vcf`); other
-        formats use Gigwa's BrAPI per-format export endpoint, which is likewise async
-        (HTTP 202 while preparing, 200 with the payload once ready).
+        The formats a given Gigwa build accepts vary (verified live on 2.13-beta2:
+        ``VCF``, ``PLINK`` and ``Flapjack`` work; ``HAPMAP``/``DARWIN`` return HTTP 400
+        "Unsupported data format"). VCF goes through the async BrAPI export
+        (:meth:`export_variantset_vcf`); other formats use Gigwa's BrAPI per-format export
+        endpoint, which is likewise async (HTTP 202 while preparing, 200 once ready). The
+        format token is case-insensitive server-side. A 400 raises a clear error naming the
+        formats the server advertises for this set (``availableFormats``).
         """
         fmt_up = str(fmt).upper()
         if fmt_up == "VCF":
@@ -694,27 +698,49 @@ class GigwaClient:
             )
         dest_path = Path(dest_path)
         quoted = urllib.parse.quote(variant_set_db_id, safe="")
-        path = f"/brapi/v2/variantsets/{quoted}/export/{fmt_up.lower()}"
+        path = f"/brapi/v2/variantsets/{quoted}/export/{fmt}"
         deadline = time.monotonic() + timeout
         while True:
             resp = self.request("GET", path)
             if resp.status_code == 200 and len(resp.content) > 64:
                 dest_path.write_bytes(resp.content)
                 return dest_path
+            if resp.status_code == 400:
+                raise GigwaAPIError(
+                    f"Gigwa does not support export format '{fmt}' for this variant set. "
+                    f"Available on this instance: {', '.join(self._available_formats(variant_set_db_id)) or 'VCF'}.",
+                    status_code=400,
+                    body=resp.text,
+                )
             if resp.status_code not in (200, 202):
                 raise GigwaAPIError(
-                    f"{fmt_up} export failed", status_code=resp.status_code, body=resp.text
+                    f"{fmt} export failed", status_code=resp.status_code, body=resp.text
                 )
             if time.monotonic() >= deadline:
                 raise GigwaAPIError(
-                    f"{fmt_up} export timed out after {timeout:.0f}s for {variant_set_db_id}."
+                    f"{fmt} export timed out after {timeout:.0f}s for {variant_set_db_id}."
                 )
             time.sleep(poll_interval)
 
+    def _available_formats(self, variant_set_db_id: str) -> list[str]:
+        """Best-effort list of export formats a variant set advertises (``availableFormats``)."""
+        try:
+            for vs in self.list_variantsets():
+                if vs.get("variantSetDbId") == variant_set_db_id:
+                    return [f.get("dataFormat") for f in vs.get("availableFormats", []) if f.get("dataFormat")]
+        except Exception:  # noqa: BLE001 - purely advisory
+            pass
+        return []
+
     # -- process control / user info --------------------------------------
     def abort(self, token: str) -> bool:
-        """Ask Gigwa to abort the process identified by *token*. Returns True on success."""
-        resp = self.request("GET", "/gigwa/abortProcess", params={"processID": token})
+        """Ask Gigwa to abort the process identified by *token*. Returns True on success.
+
+        The endpoint is ``DELETE /gigwa/abortProcess?processID=<token>`` — verified live
+        against 2.13-beta2 (GET/POST return HTTP 500 "method not supported"; DELETE
+        returns 200 and stops the running job).
+        """
+        resp = self.request("DELETE", "/gigwa/abortProcess", params={"processID": token})
         if resp.status_code >= 400:
             raise GigwaAPIError("abortProcess failed", status_code=resp.status_code, body=resp.text)
         return True

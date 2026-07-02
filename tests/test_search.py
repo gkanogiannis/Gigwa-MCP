@@ -108,7 +108,7 @@ def test_export_data_nonvcf_streams_after_202(tmp_path):
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert "/export/plink" in request.url.path
+        assert "/export/plink" in request.url.path.lower()
         calls["n"] += 1
         if calls["n"] == 1:
             return httpx.Response(202, text="preparing")
@@ -124,12 +124,14 @@ def test_abort_calls_abort_process():
     seen = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
         seen["path"] = request.url.path
         seen["params"] = dict(request.url.params)
         return httpx.Response(200, json={})
 
     client = make_client(_token_or(handler))
     assert client.abort("import::u::xyz") is True
+    assert seen["method"] == "DELETE"  # GET/POST return HTTP 500 on the live server
     assert seen["path"].endswith("/gigwa/abortProcess")
     assert seen["params"]["processID"] == "import::u::xyz"
 

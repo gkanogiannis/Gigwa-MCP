@@ -173,10 +173,11 @@ def export_genotypes(
 ) -> str:
     """Export a variant set to a file in the given format.
 
-    ``format`` is one of Gigwa's export formats — ``VCF`` (default), ``PLINK``, ``HAPMAP``,
-    ``FLAPJACK``, ``DARWIN`` (availability depends on the Gigwa build). The export runs
-    server-side and is streamed to ``output_path``. For large sets this can take a while;
-    raise ``timeout`` (seconds) if needed.
+    ``format`` is one of Gigwa's export formats. Which are available depends on the Gigwa
+    build — ``VCF`` (default), ``PLINK`` and ``FLAPJACK`` are commonly supported; others
+    (``HAPMAP``, ``DARWIN``, …) may not be, in which case the tool reports the formats this
+    instance actually offers. The export runs server-side and is streamed to
+    ``output_path``. For large sets this can take a while; raise ``timeout`` (seconds).
     """
     client = get_client()
     dest = Path(output_path)

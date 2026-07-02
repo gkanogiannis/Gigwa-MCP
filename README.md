@@ -90,7 +90,7 @@ never modify the data in Gigwa.
 | `list_sequences` | List the chromosomes/contigs of a variant set (valid `reference_name` values) |
 | `count_variants` | Count variants matching region / MAF / missing-data filters, server-side (no download) |
 | `search_variants` | Search variants server-side and write the matching list (`variant_search.csv`) |
-| `export_genotypes` | Export a variant set to a file — `VCF`/`PLINK`/`HAPMAP`/`FLAPJACK`/`DARWIN` |
+| `export_genotypes` | Export a variant set to a file — `VCF`/`PLINK`/`Flapjack` (formats vary by build) |
 | `get_germplasm_metadata` | Pull server-stored per-individual attributes (`germplasm_metadata.csv`) |
 
 **QC & diversity (read-only)**
@@ -413,7 +413,7 @@ args `max_markers` / `method` (`"vcf"` | `"allelematrix"`), and `region`
 | `list_sequences` | `variant_set_db_id` | chromosomes/contigs (valid `reference_name`s) |
 | `count_variants` | `reference_name?`, `start?`, `end?`, `min_maf?`, `max_maf?`, `max_missing_data?` | server-side match count (no download) |
 | `search_variants` | same filters as `count_variants`, `max_variants=100000` | `variant_search.csv` (id/chrom/pos/ref/alt) |
-| `export_genotypes` | `output_path`, `format="VCF"` (`PLINK`/`HAPMAP`/`FLAPJACK`/`DARWIN`) | writes the export file |
+| `export_genotypes` | `output_path`, `format="VCF"` (`PLINK`/`Flapjack`; varies by build) | writes the export file |
 | `get_germplasm_metadata` | `variant_set_db_id` | `germplasm_metadata.csv` (server-stored attributes) |
 
 **QC & diversity** (output files listed in [Output files](#output-files))
@@ -688,7 +688,7 @@ callset-name mapping with a mock client. The suite needs no live Gigwa server.
 ### v1.2.0 — server-side search, filtered analysis & export
 
 Adds 7 tools (**21 → 28**) that surface more of the Gigwa REST API, plus a genomic-region
-filter on every analysis tool.
+filter on every analysis tool. Live-verified against Gigwa 2.12-RELEASE and 2.13-beta2.
 
 - **Server-side variant search** (no full download): `count_variants` and `search_variants`
   filter by genomic region, MAF range, and missing-data fraction via Gigwa's GA4GH
@@ -696,7 +696,7 @@ filter on every analysis tool.
 - **Region-restricted analysis**: every QC & diversity tool now accepts
   `region` (`"chrom"` or `"chrom:start-end"`, 1-based) to run on a single genomic window.
 - **Discovery & export**: `list_variant_sets` (exact `variantSetDbId`s), `list_sequences`
-  (chromosomes/contigs), and `export_genotypes` (VCF/PLINK/HAPMAP/FLAPJACK/DARWIN).
+  (chromosomes/contigs), and `export_genotypes` (VCF/PLINK/Flapjack; formats vary by build).
 - **Robustness**: `abort_import` (cancel a running process), `get_germplasm_metadata`
   (pull server-stored per-individual attributes → `germplasm_metadata.csv`), and
   `gigwa_server_info` now reports the server-side user roles when available.
