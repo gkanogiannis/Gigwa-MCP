@@ -15,6 +15,7 @@ import functools
 import inspect
 import json
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Callable
 
 import anyio
@@ -24,7 +25,15 @@ from .client import GigwaClient
 from .config import GigwaConfig
 from .progress import reset_reporter, set_reporter
 
+try:
+    __version__ = version("gigwa-mcp")
+except PackageNotFoundError:  # running from a source tree without an install
+    __version__ = "0.0.0"
+
 mcp = FastMCP("gigwa")
+# Report our package version as the MCP serverInfo version (FastMCP otherwise leaves it
+# unset, so clients/registries show the mcp SDK version instead of gigwa-mcp's).
+mcp._mcp_server.version = __version__
 
 _client: GigwaClient | None = None
 

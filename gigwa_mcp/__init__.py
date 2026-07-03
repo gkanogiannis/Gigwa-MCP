@@ -7,4 +7,4 @@ QC and diversity analyses. Targeted at CGIAR genomic-resources teams and
 genebanks.
 """
 
-__version__ = "1.3.1"
+__version__ = "1.3.2"
