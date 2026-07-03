@@ -35,6 +35,11 @@ class GigwaConfig:
     username: str
     password: str
     timeout: float = 120.0
+    # Cap on TCP connection establishment only (the read/write timeout stays ``timeout``),
+    # so an unreachable/misconfigured Gigwa fails in seconds instead of hanging. Connecting
+    # to a reachable server is sub-second even across regions; raise this if you sit behind
+    # a very high-latency link.
+    connect_timeout: float = 10.0
 
     @property
     def rest_url(self) -> str:
@@ -70,9 +75,15 @@ class GigwaConfig:
         except ValueError:
             timeout = 120.0
 
+        try:
+            connect_timeout = float(os.environ.get("GIGWA_CONNECT_TIMEOUT", "10"))
+        except ValueError:
+            connect_timeout = 10.0
+
         return cls(
             base_url=values["GIGWA_URL"],
             username=values["GIGWA_USER"],
             password=values["GIGWA_PASS"],
             timeout=timeout,
+            connect_timeout=connect_timeout,
         )

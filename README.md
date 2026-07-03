@@ -54,7 +54,7 @@ genebanks, but works with any Gigwa instance.
   - [Project layout](#project-layout)
   - [Testing](#testing)
   - [Changelog](#changelog)
-    - [v1.3.3 — tool catalog, EDAM annotations \& progress reporting](#v133--tool-catalog-edam-annotations--progress-reporting)
+    - [v1.3.4 — tool catalog, EDAM annotations \& progress reporting](#v134--tool-catalog-edam-annotations--progress-reporting)
     - [v1.2.0 — server-side search, filtered analysis \& export](#v120--server-side-search-filtered-analysis--export)
     - [v1.1.0 — Docker support](#v110--docker-support)
     - [v1.0.0 — initial release](#v100--initial-release)
@@ -731,7 +731,7 @@ callset-name mapping with a mock client. The suite needs no live Gigwa server.
 
 ## Changelog
 
-### v1.3.3 — tool catalog, EDAM annotations & progress reporting
+### v1.3.4 — tool catalog, EDAM annotations & progress reporting
 
 - **Tool catalog** in `server.py`: a central `TOOL_CATALOG` annotates all 28 tools with a
   category and [EDAM](https://edamontology.org) ontology terms (operation + topic). These
