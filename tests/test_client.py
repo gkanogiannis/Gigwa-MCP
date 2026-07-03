@@ -31,6 +31,37 @@ def test_generates_token_and_sends_bearer():
     assert seen["auth"] == "Bearer abc"
 
 
+def test_anonymous_sends_no_auth_and_never_generates_token():
+    token_calls = {"n": 0}
+    saw_auth = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/generateToken"):
+            token_calls["n"] += 1
+            return httpx.Response(201, json={"token": "x"})
+        if "authorization" in {k.lower() for k in request.headers}:
+            saw_auth["n"] += 1
+        return httpx.Response(200, json={"ok": True})
+
+    # No credentials configured -> anonymous access.
+    client = GigwaClient(GigwaConfig(base_url="http://test/gigwa"))
+    client._http = httpx.Client(transport=httpx.MockTransport(handler))
+    assert client.anonymous is True
+    assert client.instance_content_summary() == {"ok": True}
+    assert token_calls["n"] == 0  # never hit generateToken
+    assert saw_auth["n"] == 0  # never sent an Authorization header
+
+
+def test_anonymous_does_not_retry_on_401():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, text="unauthorized")
+
+    client = GigwaClient(GigwaConfig(base_url="http://test/gigwa"))
+    client._http = httpx.Client(transport=httpx.MockTransport(handler))
+    resp = client.request("GET", "/gigwa/instanceContentSummary")
+    assert resp.status_code == 401  # returned as-is, no auth-refresh loop
+
+
 def test_refreshes_token_on_401():
     issued: list[str] = []
     tokens = ["t1", "t2"]

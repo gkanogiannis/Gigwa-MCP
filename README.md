@@ -54,6 +54,7 @@ genebanks, but works with any Gigwa instance.
   - [Project layout](#project-layout)
   - [Testing](#testing)
   - [Changelog](#changelog)
+    - [v1.4.0 — anonymous access \& fast-fail timeouts](#v140--anonymous-access--fast-fail-timeouts)
     - [v1.3.4 — tool catalog, EDAM annotations \& progress reporting](#v134--tool-catalog-edam-annotations--progress-reporting)
     - [v1.2.0 — server-side search, filtered analysis \& export](#v120--server-side-search-filtered-analysis--export)
     - [v1.1.0 — Docker support](#v110--docker-support)
@@ -334,12 +335,26 @@ the working directory or any parent (`cp .env.example .env` and edit):
 GIGWA_URL=http://localhost:8080/gigwa
 GIGWA_USER=your_user
 GIGWA_PASS=your_password
-# GIGWA_TIMEOUT=120   # optional, seconds
+# GIGWA_TIMEOUT=120          # optional, seconds — read/request timeout
+# GIGWA_CONNECT_TIMEOUT=10   # optional, seconds — TCP connect only
 ```
 
 `GIGWA_URL` is the Gigwa base URL **without** the `/rest` suffix (it is appended
 automatically). The target Gigwa may be local or remote. `.env` files are gitignored;
 keep credentials out of version control.
+
+**Anonymous access.** `GIGWA_USER`/`GIGWA_PASS` are **optional** — omit *both* to connect
+as Gigwa's anonymous user, which can perform the public/read-only operations a given
+instance exposes (discovery, `list_content`/`list_variant_sets`, `search_callsets`,
+`count_variants`, and the read-only analyses on public data). For example, point at the
+public demo instance with no credentials:
+
+```dotenv
+GIGWA_URL=https://gigwa.southgreen.fr/gigwa
+```
+
+Set both `GIGWA_USER` and `GIGWA_PASS` to authenticate (required for import/write
+operations and private databases); setting only one is an error.
 
 ## Connecting from an MCP client
 
@@ -730,6 +745,20 @@ statistics against hand-computed values; `test_genotypes.py` exercises VCF parsi
 callset-name mapping with a mock client. The suite needs no live Gigwa server.
 
 ## Changelog
+
+### v1.4.0 — anonymous access & fast-fail timeouts
+
+- **Anonymous access.** `GIGWA_USER`/`GIGWA_PASS` are now optional — omit *both* to connect
+  as Gigwa's anonymous user and run the public/read-only operations an instance exposes
+  (`list_content`, `list_variant_sets`, `search_callsets`, `count_variants`, read-only
+  analyses). Verified against the public `gigwa.southgreen.fr` demo. Setting only one of the
+  two is now an error.
+- **Fast-fail, configurable connection timeout.** An unreachable/misconfigured Gigwa now
+  errors in seconds instead of hanging for the full request timeout: the TCP-connect phase
+  is capped separately (default 10 s, override with `GIGWA_CONNECT_TIMEOUT`), while
+  read/import/export timeouts are unchanged.
+- **`serverInfo` version.** The server now reports the `gigwa-mcp` package version (it
+  previously surfaced the MCP SDK version).
 
 ### v1.3.4 — tool catalog, EDAM annotations & progress reporting
 

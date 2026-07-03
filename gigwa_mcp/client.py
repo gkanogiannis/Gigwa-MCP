@@ -115,6 +115,16 @@ class GigwaClient:
         self.close()
 
     # -- auth --------------------------------------------------------------
+    @property
+    def anonymous(self) -> bool:
+        """True when no credentials are configured — requests go out unauthenticated.
+
+        Gigwa treats unauthenticated requests as the *anonymous* user, which can perform
+        the public/read-only operations a given instance exposes. (Anonymous access is
+        "send no token", not "send an empty token" — ``generateToken`` rejects empty creds.)
+        """
+        return not (self.config.username and self.config.password)
+
     def _generate_token(self) -> str:
         url = f"{self.rest}/gigwa/generateToken"
         try:
@@ -140,6 +150,8 @@ class GigwaClient:
         return token
 
     def _token_header(self) -> dict[str, str]:
+        if self.anonymous:
+            return {}  # no Authorization header => anonymous access
         if not self._token:
             self._generate_token()
         return {"Authorization": f"Bearer {self._token}"}
@@ -164,7 +176,7 @@ class GigwaClient:
             json=json_body,
             headers=self._token_header(),
         )
-        if resp.status_code == 401 and _retry_auth:
+        if resp.status_code == 401 and _retry_auth and not self.anonymous:
             # Token likely expired -> refresh once and retry.
             self._token = None
             return self.request(

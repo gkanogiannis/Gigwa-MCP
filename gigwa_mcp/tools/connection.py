@@ -17,15 +17,18 @@ def gigwa_server_info() -> str:
     """
     client = get_client()
     version = client.server_version()
-    # Force a token round-trip so we fail fast on bad credentials / unreachable host.
+    # Force a round-trip so we fail fast on bad credentials / unreachable host (and, when
+    # authenticated, exercise token generation).
     client.instance_content_summary()
     lines = [
         f"Connected to Gigwa at {client.config.base_url}",
         f"REST base: {client.rest}",
         f"Version: {version or 'unknown'}",
-        f"User: {client.config.username}",
-        "Authentication: OK",
     ]
+    if client.anonymous:
+        lines += ["User: (anonymous)", "Authentication: anonymous (public/read-only access)"]
+    else:
+        lines += [f"User: {client.config.username}", "Authentication: OK"]
     # Best-effort: report server-side user identity / roles when the build supports it.
     info = client.user_info()
     if info:

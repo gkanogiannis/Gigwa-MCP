@@ -32,8 +32,11 @@ def _find_dotenv(start: Path | None = None) -> Path | None:
 @dataclass(frozen=True)
 class GigwaConfig:
     base_url: str
-    username: str
-    password: str
+    # Credentials are optional: leave both empty to use Gigwa's **anonymous** access
+    # (public/read-only operations on public instances). When empty, the client sends no
+    # ``Authorization`` header rather than trying to generate a token.
+    username: str = ""
+    password: str = ""
     timeout: float = 120.0
     # Cap on TCP connection establishment only (the read/write timeout stays ``timeout``),
     # so an unreachable/misconfigured Gigwa fails in seconds instead of hanging. Connecting
@@ -56,18 +59,20 @@ class GigwaConfig:
             if env_path is not None:
                 load_dotenv(env_path)
 
-        values = {
-            "GIGWA_URL": os.environ.get("GIGWA_URL"),
-            "GIGWA_USER": os.environ.get("GIGWA_USER"),
-            "GIGWA_PASS": os.environ.get("GIGWA_PASS"),
-        }
-        missing = [key for key, val in values.items() if not val]
-        if missing:
+        base_url = os.environ.get("GIGWA_URL")
+        if not base_url:
             raise GigwaConfigError(
-                "Missing required environment variable(s): "
-                + ", ".join(missing)
-                + ". Set them in your environment or a .env file "
-                "(GIGWA_URL, GIGWA_USER, GIGWA_PASS)."
+                "Missing required environment variable GIGWA_URL. Set it in your "
+                "environment or a .env file. GIGWA_USER / GIGWA_PASS are optional — omit "
+                "both to use anonymous access on a public Gigwa instance."
+            )
+        # Both must be present to authenticate; otherwise fall back to anonymous access.
+        username = os.environ.get("GIGWA_USER") or ""
+        password = os.environ.get("GIGWA_PASS") or ""
+        if bool(username) != bool(password):
+            raise GigwaConfigError(
+                "Set both GIGWA_USER and GIGWA_PASS to authenticate, or neither for "
+                "anonymous access — got only one."
             )
 
         try:
@@ -81,9 +86,9 @@ class GigwaConfig:
             connect_timeout = 10.0
 
         return cls(
-            base_url=values["GIGWA_URL"],
-            username=values["GIGWA_USER"],
-            password=values["GIGWA_PASS"],
+            base_url=base_url,
+            username=username,
+            password=password,
             timeout=timeout,
             connect_timeout=connect_timeout,
         )
