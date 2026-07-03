@@ -54,7 +54,7 @@ genebanks, but works with any Gigwa instance.
   - [Project layout](#project-layout)
   - [Testing](#testing)
   - [Changelog](#changelog)
-    - [v1.4.0 — anonymous access \& fast-fail timeouts](#v140--anonymous-access--fast-fail-timeouts)
+    - [v1.4.1 — anonymous access \& fast-fail timeouts](#v141--anonymous-access--fast-fail-timeouts)
     - [v1.3.4 — tool catalog, EDAM annotations \& progress reporting](#v134--tool-catalog-edam-annotations--progress-reporting)
     - [v1.2.0 — server-side search, filtered analysis \& export](#v120--server-side-search-filtered-analysis--export)
     - [v1.1.0 — Docker support](#v110--docker-support)
@@ -350,7 +350,7 @@ instance exposes (discovery, `list_content`/`list_variant_sets`, `search_callset
 public demo instance with no credentials:
 
 ```dotenv
-GIGWA_URL=https://gigwa.southgreen.fr/gigwa
+GIGWA_URL=https://gigwa.icarda.org:8443/gigwa
 ```
 
 Set both `GIGWA_USER` and `GIGWA_PASS` to authenticate (required for import/write
@@ -746,12 +746,12 @@ callset-name mapping with a mock client. The suite needs no live Gigwa server.
 
 ## Changelog
 
-### v1.4.0 — anonymous access & fast-fail timeouts
+### v1.4.1 — anonymous access & fast-fail timeouts
 
 - **Anonymous access.** `GIGWA_USER`/`GIGWA_PASS` are now optional — omit *both* to connect
   as Gigwa's anonymous user and run the public/read-only operations an instance exposes
   (`list_content`, `list_variant_sets`, `search_callsets`, `count_variants`, read-only
-  analyses). Verified against the public `gigwa.southgreen.fr` demo. Setting only one of the
+  analyses). Verified against the public `gigwa.icarda.org` demo. Setting only one of the
   two is now an error.
 - **Fast-fail, configurable connection timeout.** An unreachable/misconfigured Gigwa now
   errors in seconds instead of hanging for the full request timeout: the TCP-connect phase
