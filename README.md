@@ -54,7 +54,7 @@ genebanks, but works with any Gigwa instance.
   - [Project layout](#project-layout)
   - [Testing](#testing)
   - [Changelog](#changelog)
-    - [v1.4.9 — anonymous access \& fast-fail timeouts](#v149--anonymous-access--fast-fail-timeouts)
+    - [v1.4.10 — anonymous access \& fast-fail timeouts](#v1410--anonymous-access--fast-fail-timeouts)
     - [v1.3.4 — tool catalog, EDAM annotations \& progress reporting](#v134--tool-catalog-edam-annotations--progress-reporting)
     - [v1.2.0 — server-side search, filtered analysis \& export](#v120--server-side-search-filtered-analysis--export)
     - [v1.1.0 — Docker support](#v110--docker-support)
@@ -343,18 +343,16 @@ GIGWA_PASS=your_password
 automatically). The target Gigwa may be local or remote. `.env` files are gitignored;
 keep credentials out of version control.
 
+**Zero config.** Every setting is optional — with **no** environment at all, the server
+connects **anonymously to the public ICARDA instance** (`https://gigwa.icarda.org:8443/gigwa`),
+so it works out of the box for a first look (a notice is printed to stderr). Set `GIGWA_URL`
+to point at your own server.
+
 **Anonymous access.** `GIGWA_USER`/`GIGWA_PASS` are **optional** — omit *both* to connect
 as Gigwa's anonymous user, which can perform the public/read-only operations a given
 instance exposes (discovery, `list_content`/`list_variant_sets`, `search_callsets`,
-`count_variants`, and the read-only analyses on public data). For example, point at the
-public demo instance with no credentials:
-
-```dotenv
-GIGWA_URL=https://gigwa.icarda.org:8443/gigwa
-```
-
-Set both `GIGWA_USER` and `GIGWA_PASS` to authenticate (required for import/write
-operations and private databases); setting only one is an error.
+`count_variants`, and the read-only analyses on public data). Set both to authenticate
+(required for import/write operations and private databases); setting only one is an error.
 
 ## Connecting from an MCP client
 
@@ -746,7 +744,7 @@ callset-name mapping with a mock client. The suite needs no live Gigwa server.
 
 ## Changelog
 
-### v1.4.9 — anonymous access & fast-fail timeouts
+### v1.4.10 — anonymous access & fast-fail timeouts
 
 - **Anonymous access.** `GIGWA_USER`/`GIGWA_PASS` are now optional — omit *both* to connect
   as Gigwa's anonymous user and run the public/read-only operations an instance exposes

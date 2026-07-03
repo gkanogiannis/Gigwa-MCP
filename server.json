@@ -8,22 +8,22 @@
     "url": "https://github.com/gkanogiannis/Gigwa-MCP",
     "source": "github"
   },
-  "version": "1.4.9",
+  "version": "1.4.10",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "gigwa-mcp",
-      "version": "1.4.9",
+      "version": "1.4.10",
       "transport": {
         "type": "stdio"
       },
       "environmentVariables": [
         {
           "name": "GIGWA_URL",
-          "description": "Base URL of the Gigwa server, without the /rest suffix.",
-          "isRequired": true,
+          "description": "Base URL of the Gigwa server, without the /rest suffix. Defaults to the public ICARDA instance when unset.",
+          "isRequired": false,
           "format": "string",
-          "placeholder": "https://gigwa.icarda.org:8443/gigwa"
+          "default": "https://gigwa.icarda.org:8443/gigwa"
         },
         {
           "name": "GIGWA_USER",
@@ -57,17 +57,17 @@
     {
       "registryType": "oci",
       "identifier": "ghcr.io/gkanogiannis/gigwa-mcp",
-      "version": "1.4.9",
+      "version": "1.4.10",
       "transport": {
         "type": "stdio"
       },
       "environmentVariables": [
         {
           "name": "GIGWA_URL",
-          "description": "Base URL of the Gigwa server, without the /rest suffix.",
-          "isRequired": true,
+          "description": "Base URL of the Gigwa server, without the /rest suffix. Defaults to the public ICARDA instance when unset.",
+          "isRequired": false,
           "format": "string",
-          "placeholder": "https://gigwa.icarda.org:8443/gigwa"
+          "default": "https://gigwa.icarda.org:8443/gigwa"
         },
         {
           "name": "GIGWA_USER",
@@ -102,7 +102,7 @@
   "_meta": {
     "io.modelcontextprotocol.registry/publisher-provided": {
       "tool": "manual",
-      "version": "1.4.9",
+      "version": "1.4.10",
       "edam": {
         "operation": ["operation_2421", "operation_3197"],
         "topic": ["topic_0199", "topic_3056", "topic_0625", "topic_0780"]
