@@ -33,6 +33,7 @@ genebanks, but works with any Gigwa instance.
   - [Connecting from an MCP client](#connecting-from-an-mcp-client)
   - [Quick start](#quick-start)
   - [Tool reference](#tool-reference)
+  - [Prompts \& resources](#prompts--resources)
   - [Usage scenarios](#usage-scenarios)
   - [Output files](#output-files)
   - [Visualizing results](#visualizing-results)
@@ -439,6 +440,29 @@ args `max_markers` / `method` (`"vcf"` | `"allelematrix"`), and `region`
 |------|---------------|------------------|
 | `audit_import_quality` | `variant_set_db_id?` (omit = whole instance), `max_markers=1000`, `max_samples=300`, thresholds | ranked BROKEN/SUSPECT/OK + `import_quality_scan.csv` |
 
+## Prompts & resources
+
+Besides tools, the server exposes MCP **prompts** and **resources** (visible in clients that
+support them, and in directories like glama.ai).
+
+**Prompts** — reusable, argument-driven workflows that chain the right tools for a task:
+
+| Prompt | Arguments | What it walks you through |
+|--------|-----------|---------------------------|
+| `import_and_qc` | `data_path`, `module`, `project`, `run`, `reference?` | import a DArTseq/VCF dataset, then the standard QC + audit |
+| `diversity_report` | `variant_set_db_id`, `metadata_tsv?`, `group_column?` | summary → PCA/structure → kinship → tree (+ per-group Fst) |
+| `qc_triage` | `variant_set_db_id` | full QC suite + a go/no-go verdict for downstream analysis |
+| `explore_instance` | (none) | server info → list content/variant sets → instance-wide audit |
+| `region_scan` | `variant_set_db_id`, `region` | sequences → count/search variants → region-filtered diversity |
+
+**Resources** — read-only endpoints a client can fetch:
+
+| Resource | Contents |
+|----------|----------|
+| `catalog://tools` | categorised catalog of all tools with their EDAM operation/topic tags |
+| `gigwa://server/info` | live connection status: server URL, version, authenticated user |
+| `gigwa://instance/summary` | live inventory of databases → projects → runs (JSON) |
+
 ## Usage scenarios
 
 **A. Import a DArTseq report, genome-anchored.** Map the tag sequences once, inspect, then
@@ -586,7 +610,12 @@ Phylo.draw(Phylo.read("gigwa_results/MYDB/tree.nwk", "newick"))
   `method="allelematrix"` to subsample large sets.
 - **Genome anchoring needs minimap2 + a reference**, and streaming very large indexes is
   I/O-bound.
-- **Single-threaded Python compute**; large matrices are held in RAM.
+- **Single interactive session — one operation at a time.** This is a per-user stdio
+  server, not a concurrent/multi-user service. It drives Gigwa through one shared HTTP
+  client, auth token and in-process genotype cache, which are not designed for parallel
+  tool calls; long tools do run in a worker thread (so the connection stays responsive and
+  streams progress), but heavy compute is still GIL-bound and effectively serialized —
+  runs are meant to happen sequentially, and large matrices are held in RAM.
 
 ## Troubleshooting
 
@@ -684,6 +713,23 @@ statistics against hand-computed values; `test_genotypes.py` exercises VCF parsi
 callset-name mapping with a mock client. The suite needs no live Gigwa server.
 
 ## Changelog
+
+### v1.3.0 — tool catalog, EDAM annotations & progress reporting
+
+- **Tool catalog** in `server.py`: a central `TOOL_CATALOG` annotates all 28 tools with a
+  category and [EDAM](https://edamontology.org) ontology terms (operation + topic). These
+  ride along as each tool's `_meta` in `tools/list`, and are published as a
+  `catalog://tools` MCP resource — improving discovery/indexing (e.g. by directories such
+  as glama.ai). A test asserts every tool has a catalog entry so the two can't drift.
+- **Progress reporting** for long-running tools: imports, exports, `map_dartseq_to_reference`,
+  and every genotype-load-based QC/diversity tool now stream `notifications/progress` to the
+  client (live import %, "Exporting VCF…", "Fetching genotypes… page k/N", "Parsing…").
+  Implemented with a `@progress_tool` decorator + a small `progress.notify()` bridge, so tool
+  bodies stay synchronous and no `Context` is threaded through the call stack.
+- **Prompts & resources.** Five workflow **prompts** (`import_and_qc`, `diversity_report`,
+  `qc_triage`, `explore_instance`, `region_scan`) and three **resources** (`catalog://tools`,
+  `gigwa://server/info`, `gigwa://instance/summary`) — so the server advertises the full set
+  of MCP capabilities (tools + prompts + resources). See [Prompts & resources](#prompts--resources).
 
 ### v1.2.0 — server-side search, filtered analysis & export
 

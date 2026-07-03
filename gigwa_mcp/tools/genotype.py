@@ -13,7 +13,7 @@ from ..importers.refmap import (
     map_tags_to_reference,
     positions_to_dataframe,
 )
-from ..server import get_client, mcp
+from ..server import get_client, mcp, progress_tool
 
 
 def _positions_from_rows(rows) -> dict:
@@ -58,7 +58,7 @@ def _wait_and_describe(client, token: str, wait: bool) -> str:
     )
 
 
-@mcp.tool()
+@progress_tool()
 def import_dartseq(
     module: str,
     project: str,
@@ -160,7 +160,7 @@ def import_dartseq(
     return header + "\n\n" + status_text
 
 
-@mcp.tool()
+@progress_tool()
 def import_vcf(
     vcf_path: str,
     module: str,
@@ -201,7 +201,7 @@ def import_vcf(
     return header + "\n\n" + _wait_and_describe(client, token, wait)
 
 
-@mcp.tool()
+@progress_tool()
 def map_dartseq_to_reference(
     snp_xlsx: str,
     reference_fasta: str,

@@ -15,10 +15,10 @@ import pandas as pd
 
 from ..analysis import genebank, load_genotypes, stats
 from ..analysis.results import resolve_output_dir, write_csv
-from ..server import get_client, mcp
+from ..server import get_client, progress_tool
 
 
-@mcp.tool()
+@progress_tool()
 def diversity_summary(
     variant_set_db_id: str,
     max_markers: int | None = None,
@@ -73,7 +73,7 @@ def diversity_summary(
     )
 
 
-@mcp.tool()
+@progress_tool()
 def diversity_pca(
     variant_set_db_id: str,
     n_components: int = 10,
@@ -147,7 +147,7 @@ def diversity_pca(
     )
 
 
-@mcp.tool()
+@progress_tool()
 def diversity_kinship(
     variant_set_db_id: str,
     max_markers: int | None = None,
@@ -229,7 +229,7 @@ def _resolve_groups(gm, groups_json: str | None) -> dict[str, list[int]]:
     return groups
 
 
-@mcp.tool()
+@progress_tool()
 def diversity_fst(
     variant_set_db_id: str,
     groups_json: str | None = None,
@@ -294,7 +294,7 @@ def diversity_fst(
     )
 
 
-@mcp.tool()
+@progress_tool()
 def diversity_by_group(
     variant_set_db_id: str,
     groups_json: str | None = None,
@@ -370,7 +370,7 @@ def diversity_by_group(
     )
 
 
-@mcp.tool()
+@progress_tool()
 def diversity_core_collection(
     variant_set_db_id: str,
     size: int | None = None,
@@ -422,7 +422,7 @@ def diversity_core_collection(
     )
 
 
-@mcp.tool()
+@progress_tool()
 def diversity_structure(
     variant_set_db_id: str,
     k_min: int = 2,
@@ -501,7 +501,7 @@ def diversity_structure(
     )
 
 
-@mcp.tool()
+@progress_tool()
 def diversity_tree(
     variant_set_db_id: str,
     max_markers: int | None = 5000,

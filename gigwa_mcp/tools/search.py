@@ -12,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 from ..analysis.results import resolve_output_dir, write_csv
-from ..server import get_client, mcp
+from ..server import get_client, mcp, progress_tool
 
 
 def _variant_row(v: dict) -> dict:
@@ -71,7 +71,7 @@ def count_variants(
     return f"{n} variant(s) match in {variant_set_db_id}{where}."
 
 
-@mcp.tool()
+@progress_tool()
 def search_variants(
     variant_set_db_id: str,
     reference_name: str | None = None,
@@ -164,7 +164,7 @@ def list_variant_sets() -> str:
     return f"{len(sets)} variant set(s):\n" + "\n".join(lines)
 
 
-@mcp.tool()
+@progress_tool()
 def export_genotypes(
     variant_set_db_id: str,
     output_path: str,

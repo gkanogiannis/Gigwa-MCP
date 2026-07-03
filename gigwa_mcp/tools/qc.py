@@ -13,7 +13,7 @@ import pandas as pd
 from ..analysis import load_genotypes
 from ..analysis import stats
 from ..analysis.results import resolve_output_dir, write_csv
-from ..server import get_client, mcp
+from ..server import get_client, progress_tool
 
 
 def _worst(df: pd.DataFrame, col: str, n: int, ascending: bool = True) -> str:
@@ -24,7 +24,7 @@ def _worst(df: pd.DataFrame, col: str, n: int, ascending: bool = True) -> str:
     )
 
 
-@mcp.tool()
+@progress_tool()
 def qc_call_rate(
     variant_set_db_id: str,
     min_sample_call_rate: float = 0.5,
@@ -80,7 +80,7 @@ def qc_call_rate(
     )
 
 
-@mcp.tool()
+@progress_tool()
 def qc_heterozygosity(
     variant_set_db_id: str,
     outlier_sd: float = 3.0,
@@ -158,7 +158,7 @@ def _union_find(n: int, pairs: list[tuple[int, int]]) -> dict[int, list[int]]:
     return {root: members for root, members in groups.items() if len(members) > 1}
 
 
-@mcp.tool()
+@progress_tool()
 def qc_duplicate_accessions(
     variant_set_db_id: str,
     similarity_threshold: float = 0.95,
@@ -239,7 +239,7 @@ def qc_duplicate_accessions(
     )
 
 
-@mcp.tool()
+@progress_tool()
 def qc_maf_filter(
     variant_set_db_id: str,
     maf_threshold: float = 0.05,

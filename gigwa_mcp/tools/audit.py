@@ -18,7 +18,7 @@ import pandas as pd
 from ..analysis import load_genotypes, stats
 from ..analysis.genotypes import GenotypeMatrix
 from ..analysis.results import write_csv
-from ..server import get_client, mcp
+from ..server import get_client, progress_tool
 
 # CSV / DataFrame column order (also the per-run diagnostic keys, plus status/reasons).
 _COLUMNS = [
@@ -129,7 +129,7 @@ def _classify(
     return status, reasons
 
 
-@mcp.tool()
+@progress_tool()
 def audit_import_quality(
     variant_set_db_id: str | None = None,
     max_markers: int = 1000,

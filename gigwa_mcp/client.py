@@ -26,6 +26,7 @@ import httpx
 
 from .config import GigwaConfig
 from .errors import GigwaAPIError, GigwaAuthError, GigwaImportError
+from .progress import notify
 
 
 def _bool(value: bool | None) -> str | None:
@@ -370,6 +371,12 @@ class GigwaClient:
             if status is not None:
                 seen = True
                 last = status
+                pct = status.percent
+                notify(
+                    status.summary(),
+                    pct if (pct is not None and 0 <= pct <= 100) else None,
+                    100,
+                )
                 if on_update is not None:
                     on_update(status)
                 if status.error:
@@ -466,6 +473,7 @@ class GigwaClient:
                 raise GigwaAPIError(
                     f"VCF export timed out after {timeout:.0f}s for {variant_set_db_id}."
                 )
+            notify("Exporting VCF from Gigwa…")
             time.sleep(poll_interval)
 
     # -- variant search / filtering (GA4GH) --------------------------------
@@ -720,6 +728,7 @@ class GigwaClient:
                 raise GigwaAPIError(
                     f"{fmt} export timed out after {timeout:.0f}s for {variant_set_db_id}."
                 )
+            notify(f"Exporting {fmt} from Gigwa…")
             time.sleep(poll_interval)
 
     def _available_formats(self, variant_set_db_id: str) -> list[str]:

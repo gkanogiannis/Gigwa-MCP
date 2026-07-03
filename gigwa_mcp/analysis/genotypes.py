@@ -23,6 +23,7 @@ import numpy as np
 
 from ..client import GigwaClient
 from ..errors import GigwaAPIError, GigwaError
+from ..progress import notify
 
 # In-process cache of the full (un-subsampled) VCF-path matrix, keyed by variantSetDbId.
 _SESSION_CACHE: dict[str, "GenotypeMatrix"] = {}
@@ -156,6 +157,7 @@ def _download_and_parse(
     if not (vcf_path.exists() and vcf_path.stat().st_size > 64):
         client.export_variantset_vcf(variant_set_db_id, vcf_path)
 
+    notify("Parsing genotypes…")
     with warnings.catch_warnings():
         # Gigwa's export omits the ##FORMAT=<ID=GT> header line; GT still parses fine.
         warnings.filterwarnings("ignore", message=".*FORMAT header not found.*")
@@ -316,6 +318,8 @@ def _load_via_allelematrix(
     depth_present = depth_positive = False
     var_blocks, var_id_blocks, sample_ids = [], [], None
     for vp in range(var_pages):
+        if var_pages > 1:
+            notify(f"Fetching genotypes… page {vp + 1}/{var_pages}", vp, var_pages)
         cs_cols, page_var_ids, page_sids = [], None, []
         for cp in range(cs_pages):
             res = first if (vp == 0 and cp == 0) else client.search_allelematrix(
