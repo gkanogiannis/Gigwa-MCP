@@ -20,9 +20,14 @@ def test_every_tool_exposes_edam_meta():
     server._apply_catalog_meta()
     for tool in server.mcp._tool_manager.list_tools():
         assert tool.meta, f"{tool.name} has no _meta"
-        assert "category" in tool.meta
-        edam = tool.meta.get("edam", {})
+        # _meta is exactly {"edam": {...}} — no extra keys (matches the glama-indexing shape).
+        assert set(tool.meta) == {"edam"}, f"{tool.name} _meta has unexpected keys: {set(tool.meta)}"
+        edam = tool.meta["edam"]
         assert edam.get("operation") and edam.get("topic"), f"{tool.name} missing EDAM terms"
+        # Bare EDAM id strings, not {id, label} objects.
+        assert all(isinstance(x, str) for x in edam["operation"] + edam["topic"]), (
+            f"{tool.name} EDAM terms must be bare id strings"
+        )
 
 
 def test_catalog_resource_lists_all_tools():

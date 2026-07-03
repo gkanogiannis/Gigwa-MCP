@@ -125,12 +125,17 @@ class ToolInfo:
     topic: _Term
 
     def meta(self) -> dict:
-        """The tool's ``_meta`` payload: category + EDAM operation/topic (id + label)."""
+        """The tool's ``_meta`` payload: EDAM operation/topic as **bare id strings**.
+
+        Matches the exact shape other bioinformatics MCP servers use and what directory
+        indexers (glama.ai) expect — ``{"edam": {"operation": ["operation_xxxx"],
+        "topic": ["topic_xxxx"]}}`` — with no extra keys. The category and human-readable
+        EDAM labels are published separately in the ``catalog://tools`` resource.
+        """
         return {
-            "category": self.category,
             "edam": {
-                "operation": [{"id": self.operation[0], "label": self.operation[1]}],
-                "topic": [{"id": self.topic[0], "label": self.topic[1]}],
+                "operation": [self.operation[0]],
+                "topic": [self.topic[0]],
             },
         }
 
