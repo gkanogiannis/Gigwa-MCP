@@ -2,6 +2,8 @@
   <img src="docs/img/logo.png" alt="Gigwa MCP" width="460">
 </p>
 
+[![gigwa-mcp MCP server](https://glama.ai/mcp/servers/gkanogiannis/gigwa-mcp/badges/card.svg)](https://glama.ai/mcp/servers/gkanogiannis/gigwa-mcp)
+
 # Gigwa MCP Server
 
 An [MCP](https://modelcontextprotocol.io) server that drives a local or remote
@@ -29,6 +31,7 @@ genebanks, but works with any Gigwa instance.
   - [Requirements](#requirements)
   - [Installation](#installation)
     - [Add it to Claude Code (the simple version)](#add-it-to-claude-code-the-simple-version)
+    - [Run with Docker](#run-with-docker)
   - [Configuration](#configuration)
   - [Connecting from an MCP client](#connecting-from-an-mcp-client)
   - [Quick start](#quick-start)
@@ -51,6 +54,10 @@ genebanks, but works with any Gigwa instance.
   - [Project layout](#project-layout)
   - [Testing](#testing)
   - [Changelog](#changelog)
+    - [v1.3.1 — tool catalog, EDAM annotations \& progress reporting](#v131--tool-catalog-edam-annotations--progress-reporting)
+    - [v1.2.0 — server-side search, filtered analysis \& export](#v120--server-side-search-filtered-analysis--export)
+    - [v1.1.0 — Docker support](#v110--docker-support)
+    - [v1.0.0 — initial release](#v100--initial-release)
   - [License \& contributing](#license--contributing)
 
 ## Overview
@@ -724,7 +731,7 @@ callset-name mapping with a mock client. The suite needs no live Gigwa server.
 
 ## Changelog
 
-### v1.3.0 — tool catalog, EDAM annotations & progress reporting
+### v1.3.1 — tool catalog, EDAM annotations & progress reporting
 
 - **Tool catalog** in `server.py`: a central `TOOL_CATALOG` annotates all 28 tools with a
   category and [EDAM](https://edamontology.org) ontology terms (operation + topic). These
