@@ -13,8 +13,6 @@ FROM python:3.12-slim AS builder
 ENV PIP_NO_CACHE_DIR=1
 
 # Toolchain for any deps without a matching wheel (mappy compiles against zlib).
-RUN sed -i -e 's/http:\/\/deb\.debian\.org\/debian\//https:\/\/debian\.otenet\.gr\/debian/' /etc/apt/sources.list.d/debian.sources
-
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*

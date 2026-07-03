@@ -258,15 +258,25 @@ server. You do it once, with a single command without editting any files by hand
 
 ### Run with Docker
 
-Prefer a container instead of `uvx`/`pipx`? Build the image once and let your MCP client
-launch it. The server speaks stdio, so the client starts it with `docker run -i` the same
-way it would start `uvx gigwa-mcp`.
+Prefer a container instead of `uvx`/`pipx`? Use the prebuilt image or build it yourself,
+then let your MCP client launch it. The server speaks stdio, so the client starts it with
+`docker run -i` the same way it would start `uvx gigwa-mcp`.
 
-**Build:**
+**Pull the prebuilt image** (published to the GitHub Container Registry, multi-arch
+`linux/amd64` + `linux/arm64`):
+
+```bash
+docker pull ghcr.io/gkanogiannis/gigwa-mcp:latest
+```
+
+**…or build it yourself:**
 
 ```bash
 docker build -t gigwa-mcp .
 ```
+
+The examples below use the local tag `gigwa-mcp`; swap in
+`ghcr.io/gkanogiannis/gigwa-mcp:latest` to run the prebuilt image instead.
 
 **MCP client config** (Claude Desktop / Claude Code) — use `docker` as the command:
 
