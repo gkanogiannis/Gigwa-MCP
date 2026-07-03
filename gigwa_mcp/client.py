@@ -44,6 +44,11 @@ def _bool(value: bool | None) -> str | None:
 SEARCH_MODE_COUNT = 0
 SEARCH_MODE_FETCH = 3
 
+# Cap on TCP connection establishment (seconds); the read/write timeout stays at the
+# configured (longer) value so slow imports/exports are unaffected. Keeps a probe against
+# an unreachable Gigwa from blocking for the whole timeout.
+_CONNECT_TIMEOUT = 5.0
+
 
 @dataclass
 class ProgressStatus:
@@ -95,7 +100,14 @@ class GigwaClient:
         self.config = config
         self.rest = config.rest_url
         self._token: str | None = None
-        self._http = httpx.Client(timeout=config.timeout, follow_redirects=True)
+        # Bound *connection* establishment separately from the (long) read timeout: reads
+        # can legitimately take minutes (VCF export / import), but connecting should be
+        # quick. This makes an unreachable/misconfigured Gigwa fail in a few seconds
+        # instead of hanging for the full timeout — e.g. when a server is booted without a
+        # real Gigwa behind it (placeholder creds in a sandbox), so a probe of a
+        # connection-touching tool/resource errors promptly rather than stalling.
+        timeout = httpx.Timeout(config.timeout, connect=min(config.timeout, _CONNECT_TIMEOUT))
+        self._http = httpx.Client(timeout=timeout, follow_redirects=True)
 
     # -- lifecycle ---------------------------------------------------------
     def close(self) -> None:
