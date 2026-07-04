@@ -391,25 +391,24 @@ def tool_catalog() -> str:
 
 @mcp.resource("gigwa://server/info", name="Gigwa server info", mime_type="text/plain")
 def server_info_resource() -> str:
-    """Live connection status: server URL, version and authenticated user."""
+    """Configured connection info — the target URL and auth mode.
+
+    Deliberately makes **no network call**: reading a resource must be side-effect-free,
+    and the server should not generate outbound traffic during directory inspection. Use
+    the ``gigwa_server_info`` tool to actually test the live connection and fetch the
+    server version.
+    """
     try:
-        client = get_client()
+        client = get_client()  # constructs the client only; opens no connection
+        auth = "anonymous (public/read-only)" if client.anonymous else f"user '{client.config.username}'"
         return (
-            f"Gigwa {client.server_version() or 'unknown'} at {client.config.base_url}\n"
+            f"Gigwa server: {client.config.base_url}\n"
             f"REST base: {client.rest}\n"
-            f"User: {client.config.username}"
+            f"Authentication: {auth}\n"
+            "(Run the gigwa_server_info tool to test the live connection and version.)"
         )
     except Exception as exc:  # noqa: BLE001 - resource read must not raise
-        return f"Gigwa server not reachable / not configured: {exc}"
-
-
-@mcp.resource("gigwa://instance/summary", name="Gigwa instance content", mime_type="application/json")
-def instance_summary_resource() -> str:
-    """Live inventory of the instance (databases → projects → runs), as JSON."""
-    try:
-        return json.dumps(get_client().instance_content_summary(), indent=2)
-    except Exception as exc:  # noqa: BLE001 - resource read must not raise
-        return json.dumps({"error": str(exc)})
+        return f"Gigwa not configured: {exc}"
 
 
 # Register the workflow prompts (attaches their @mcp.prompt() functions to `mcp`).

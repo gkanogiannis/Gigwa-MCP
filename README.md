@@ -54,7 +54,7 @@ genebanks, but works with any Gigwa instance.
   - [Project layout](#project-layout)
   - [Testing](#testing)
   - [Changelog](#changelog)
-    - [v1.4.15 — anonymous access \& fast-fail timeouts](#v1415--anonymous-access--fast-fail-timeouts)
+    - [v1.4.16 — anonymous access \& fast-fail timeouts](#v1416--anonymous-access--fast-fail-timeouts)
     - [v1.3.4 — tool catalog, EDAM annotations \& progress reporting](#v134--tool-catalog-edam-annotations--progress-reporting)
     - [v1.2.0 — server-side search, filtered analysis \& export](#v120--server-side-search-filtered-analysis--export)
     - [v1.1.0 — Docker support](#v110--docker-support)
@@ -490,8 +490,7 @@ support them, and in directories like glama.ai).
 | Resource | Contents |
 |----------|----------|
 | `catalog://tools` | categorised catalog of all tools with their EDAM operation/topic tags |
-| `gigwa://server/info` | live connection status: server URL, version, authenticated user |
-| `gigwa://instance/summary` | live inventory of databases → projects → runs (JSON) |
+| `gigwa://server/info` | configured connection info (target URL + auth mode); no network call |
 
 ## Usage scenarios
 
@@ -744,7 +743,7 @@ callset-name mapping with a mock client. The suite needs no live Gigwa server.
 
 ## Changelog
 
-### v1.4.15 — anonymous access & fast-fail timeouts
+### v1.4.16 — anonymous access & fast-fail timeouts
 
 - **Anonymous access.** `GIGWA_USER`/`GIGWA_PASS` are now optional — omit *both* to connect
   as Gigwa's anonymous user and run the public/read-only operations an instance exposes
@@ -771,8 +770,8 @@ callset-name mapping with a mock client. The suite needs no live Gigwa server.
   Implemented with a `@progress_tool` decorator + a small `progress.notify()` bridge, so tool
   bodies stay synchronous and no `Context` is threaded through the call stack.
 - **Prompts & resources.** Five workflow **prompts** (`import_and_qc`, `diversity_report`,
-  `qc_triage`, `explore_instance`, `region_scan`) and three **resources** (`catalog://tools`,
-  `gigwa://server/info`, `gigwa://instance/summary`) — so the server advertises the full set
+  `qc_triage`, `explore_instance`, `region_scan`) and **resources** (`catalog://tools`,
+  `gigwa://server/info`) — so the server advertises the full set
   of MCP capabilities (tools + prompts + resources). See [Prompts & resources](#prompts--resources).
 
 ### v1.2.0 — server-side search, filtered analysis & export

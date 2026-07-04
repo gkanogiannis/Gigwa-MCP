@@ -17,7 +17,6 @@ EXPECTED_PROMPTS = {
 EXPECTED_RESOURCES = {
     "catalog://tools",
     "gigwa://server/info",
-    "gigwa://instance/summary",
 }
 
 
