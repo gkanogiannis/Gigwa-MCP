@@ -34,14 +34,17 @@ def test_tool_schemas_match_hand_written_shape():
     """inputSchema has descriptions (no titles) + additionalProperties:false, and there is
     no synthesised outputSchema — matching the shape established MCP servers expose."""
     # Re-apply in case a tool registered after a circular import elsewhere in the run.
+    import json
+
     server._normalize_tool_schemas()
     for tool in server.mcp._tool_manager.list_tools():
         assert tool.output_schema is not None, f"{tool.name} is missing an outputSchema"
+        # No 'title' anywhere in either schema.
+        assert '"title"' not in json.dumps(tool.parameters), f"{tool.name} inputSchema has a title"
+        assert '"title"' not in json.dumps(tool.output_schema), f"{tool.name} outputSchema has a title"
         schema = tool.parameters
-        assert "title" not in schema, f"{tool.name} inputSchema has a top-level title"
         assert schema.get("additionalProperties") is False, f"{tool.name} missing additionalProperties:false"
         for pname, pschema in (schema.get("properties") or {}).items():
-            assert "title" not in pschema, f"{tool.name}.{pname} property still has a title"
             assert pschema.get("description"), f"{tool.name}.{pname} property has no description"
 
 

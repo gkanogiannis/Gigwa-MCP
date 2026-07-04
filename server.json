@@ -8,12 +8,12 @@
     "url": "https://github.com/gkanogiannis/Gigwa-MCP",
     "source": "github"
   },
-  "version": "1.4.14",
+  "version": "1.4.15",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "gigwa-mcp",
-      "version": "1.4.14",
+      "version": "1.4.15",
       "transport": {
         "type": "stdio"
       },
@@ -57,7 +57,7 @@
     {
       "registryType": "oci",
       "identifier": "ghcr.io/gkanogiannis/gigwa-mcp",
-      "version": "1.4.14",
+      "version": "1.4.15",
       "transport": {
         "type": "stdio"
       },
@@ -102,7 +102,7 @@
   "_meta": {
     "io.modelcontextprotocol.registry/publisher-provided": {
       "tool": "manual",
-      "version": "1.4.14",
+      "version": "1.4.15",
       "edam": {
         "operation": ["operation_2421", "operation_3197"],
         "topic": ["topic_0199", "topic_3056", "topic_0625", "topic_0780"]

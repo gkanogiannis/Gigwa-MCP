@@ -327,28 +327,39 @@ _PARAM_DESCRIPTIONS: dict[str, str] = {
 }
 
 
-def _normalize_tool_schemas() -> None:
-    """Shape every tool's inputSchema like a hand-written MCP tool.
+def _strip_titles(node: object) -> None:
+    """Recursively remove every ``title`` key from a JSON-schema dict/list, in place."""
+    if isinstance(node, dict):
+        node.pop("title", None)
+        for value in node.values():
+            _strip_titles(value)
+    elif isinstance(node, list):
+        for value in node:
+            _strip_titles(value)
 
-    FastMCP/pydantic derive the inputSchema from the function signature and add a per-
-    property and top-level ``title`` but no ``description``. This strips those titles,
-    attaches descriptions from :data:`_PARAM_DESCRIPTIONS`, and sets
-    ``additionalProperties: false``. The ``outputSchema`` is left untouched (kept, like the
-    reference servers — its titles come from the return-model schema and are expected).
+
+def _normalize_tool_schemas() -> None:
+    """Shape every tool's schemas like a hand-written MCP tool.
+
+    FastMCP/pydantic derive schemas from the function signature and add ``title`` keys
+    (top-level and per-property) but no parameter ``description``. This removes every
+    ``title`` from both the input and output schemas, attaches descriptions to input
+    properties from :data:`_PARAM_DESCRIPTIONS`, and sets ``additionalProperties: false``
+    on the inputSchema. The outputSchema is kept (like the reference servers), just
+    title-free.
     """
     for tool in mcp._tool_manager.list_tools():
         schema = tool.parameters
-        if not isinstance(schema, dict):
-            continue
-        schema.pop("title", None)
-        schema.setdefault("additionalProperties", False)
-        for pname, pschema in (schema.get("properties") or {}).items():
-            if not isinstance(pschema, dict):
-                continue
-            pschema.pop("title", None)
-            desc = _PARAM_DESCRIPTIONS.get(pname)
-            if desc and "description" not in pschema:
-                pschema["description"] = desc
+        if isinstance(schema, dict):
+            _strip_titles(schema)
+            schema.setdefault("additionalProperties", False)
+            for pname, pschema in (schema.get("properties") or {}).items():
+                if not isinstance(pschema, dict):
+                    continue
+                desc = _PARAM_DESCRIPTIONS.get(pname)
+                if desc and "description" not in pschema:
+                    pschema["description"] = desc
+        _strip_titles(tool.output_schema)
 
 
 _apply_catalog_meta()

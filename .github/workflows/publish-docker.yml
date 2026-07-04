@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Image tag to publish (e.g. latest, 1.4.14)"
+        description: "Image tag to publish (e.g. latest, 1.4.15)"
         type: string
         default: latest
 
