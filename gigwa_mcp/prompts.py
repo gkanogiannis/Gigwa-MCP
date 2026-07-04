@@ -11,7 +11,7 @@ from __future__ import annotations
 from .server import mcp
 
 
-@mcp.prompt(title="Import a dataset and QC it")
+@mcp.prompt()
 def import_and_qc(
     data_path: str,
     module: str,
@@ -38,7 +38,7 @@ def import_and_qc(
     )
 
 
-@mcp.prompt(title="Full diversity & structure report")
+@mcp.prompt()
 def diversity_report(
     variant_set_db_id: str,
     metadata_tsv: str = "",
@@ -69,7 +69,7 @@ def diversity_report(
     return "\n".join(lines)
 
 
-@mcp.prompt(title="QC triage a variant set")
+@mcp.prompt()
 def qc_triage(variant_set_db_id: str) -> str:
     """Run the full QC suite on a variant set and give a go/no-go verdict."""
     return (
@@ -83,7 +83,7 @@ def qc_triage(variant_set_db_id: str) -> str:
     )
 
 
-@mcp.prompt(title="Explore the Gigwa instance")
+@mcp.prompt()
 def explore_instance() -> str:
     """Get an overview of the whole Gigwa instance and flag anything that needs attention."""
     return (
@@ -95,7 +95,7 @@ def explore_instance() -> str:
     )
 
 
-@mcp.prompt(title="Scan a genomic region")
+@mcp.prompt()
 def region_scan(variant_set_db_id: str, region: str) -> str:
     """Characterise variants and diversity within one genomic region."""
     return (

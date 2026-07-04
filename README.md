@@ -54,7 +54,7 @@ genebanks, but works with any Gigwa instance.
   - [Project layout](#project-layout)
   - [Testing](#testing)
   - [Changelog](#changelog)
-    - [v1.4.12 — anonymous access \& fast-fail timeouts](#v1412--anonymous-access--fast-fail-timeouts)
+    - [v1.4.14 — anonymous access \& fast-fail timeouts](#v1414--anonymous-access--fast-fail-timeouts)
     - [v1.3.4 — tool catalog, EDAM annotations \& progress reporting](#v134--tool-catalog-edam-annotations--progress-reporting)
     - [v1.2.0 — server-side search, filtered analysis \& export](#v120--server-side-search-filtered-analysis--export)
     - [v1.1.0 — Docker support](#v110--docker-support)
@@ -744,7 +744,7 @@ callset-name mapping with a mock client. The suite needs no live Gigwa server.
 
 ## Changelog
 
-### v1.4.12 — anonymous access & fast-fail timeouts
+### v1.4.14 — anonymous access & fast-fail timeouts
 
 - **Anonymous access.** `GIGWA_USER`/`GIGWA_PASS` are now optional — omit *both* to connect
   as Gigwa's anonymous user and run the public/read-only operations an instance exposes

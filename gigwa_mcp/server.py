@@ -264,7 +264,95 @@ def catalog_drift() -> tuple[set[str], set[str]]:
     return registered - TOOL_CATALOG.keys(), TOOL_CATALOG.keys() - registered
 
 
+# Descriptions for tool input parameters, applied to each tool's inputSchema (see
+# _annotate_input_schemas). Centralised here so the 28 tool signatures stay untouched;
+# FastMCP/pydantic only auto-adds a ``title`` per property, so this supplies the
+# human-readable ``description`` that hand-written MCP schemas carry.
+_PARAM_DESCRIPTIONS: dict[str, str] = {
+    "variant_set_db_id": "BrAPI variantSetDbId identifying the run (MODULE§project§run); from list_variant_sets / list_content.",
+    "method": "Genotype source: 'vcf' (full export, cached) or 'allelematrix' (paged, server-side subset).",
+    "max_markers": "Cap the number of markers analysed (evenly-spaced subsample); omit to use all.",
+    "max_samples": "Cap the number of samples/callsets sampled (allelematrix path).",
+    "region": "Restrict analysis to a genomic window: 'chrom' or 'chrom:start-end' (1-based).",
+    "output_dir": "Directory for the output CSV(s) (default ./gigwa_results/<module>/).",
+    "output_path": "Destination file path for the export.",
+    "module": "Target Gigwa database (module) name.",
+    "project": "Target project name within the database.",
+    "run": "Target run name within the project.",
+    "technology": "Free-text genotyping technology label (e.g. 'DArTseq', 'WGS', 'GBS').",
+    "ploidy": "Sample ploidy (default 2).",
+    "skip_monomorphic": "Drop non-variant (monomorphic) markers during import.",
+    "clear_project_data": "Replace any existing data in the project before importing.",
+    "wait": "Block until the import finishes (True) or return a progress token immediately (False).",
+    "snp_xlsx": "Path to a DArTseq SNP xlsx report.",
+    "silico_xlsx": "Path to a Silico-DArT xlsx report.",
+    "vcf_path": "Path to the VCF file (.vcf or .vcf.gz) to import.",
+    "reference_fasta": "Path to a reference genome FASTA or a prebuilt minimap2 .mmi index, for genome-anchoring.",
+    "positions_csv": "Path to a dartseq_positions.csv (from map_dartseq_to_reference) to reuse instead of re-aligning.",
+    "min_mapq": "Minimum mapping quality for a tag to count as uniquely mapped.",
+    "preset": "minimap2 preset (default 'sr' for short reads).",
+    "backend": "Aligner backend: 'auto' (minimap2 CLI if available, else mappy), 'cli', or 'mappy'.",
+    "progress_token": "Progress token returned by an import (import::<user>::<uuid>).",
+    "tsv_path": "Path to the metadata TSV file.",
+    "metadata_type": "Metadata entity type / id-column name (default 'individual').",
+    "validate_first": "Validate the metadata file before importing.",
+    "reference_name": "Chromosome/contig name to restrict the search to (see list_sequences).",
+    "start": "Region start position, 1-based inclusive.",
+    "end": "Region end position, 1-based inclusive.",
+    "min_maf": "Minimum minor-allele frequency (0-1).",
+    "max_maf": "Maximum minor-allele frequency (0-1).",
+    "max_missing_data": "Maximum per-variant missing-data fraction (0-1).",
+    "max_variants": "Maximum number of matching variants to retrieve.",
+    "format": "Export format: VCF, PLINK or Flapjack (availability varies by Gigwa build).",
+    "timeout": "Maximum seconds to wait for the export to complete.",
+    "min_sample_call_rate": "Flag samples with call rate below this (0-1).",
+    "min_marker_call_rate": "Flag markers with call rate below this (0-1).",
+    "outlier_sd": "Flag points more than this many standard deviations from the mean.",
+    "similarity_threshold": "IBS similarity (0-1) at/above which accessions are grouped as duplicates.",
+    "maf_threshold": "Minor-allele-frequency threshold below which markers are flagged.",
+    "max_missing": "Maximum per-marker missing-data fraction (0-1) before a marker is flagged.",
+    "n_components": "Number of principal components to compute.",
+    "top_pairs": "How many most-related sample pairs to report.",
+    "groups_json": "JSON object mapping each group name to a list of accession names/ids.",
+    "metadata_tsv": "Path to a metadata TSV (import_metadata format) used to define groups.",
+    "group_column": "Column in the metadata TSV holding the group/population label.",
+    "id_column": "Column in the metadata TSV holding the individual/accession id (default 'individual').",
+    "size": "Explicit core-collection size (number of accessions); overrides fraction.",
+    "fraction": "Core-collection size as a fraction of all accessions (default 0.1).",
+    "k_min": "Smallest number of clusters (K) to evaluate.",
+    "k_max": "Largest number of clusters (K) to evaluate.",
+    "het_threshold": "Mean observed-heterozygosity above which a run is flagged BROKEN (mis-called heterozygotes).",
+    "complete_call_rate": "Call-rate above which a run is flagged as suspiciously complete (no missing data).",
+    "monomorphic_threshold": "Monomorphic-marker fraction above which a run is flagged for low informativeness.",
+}
+
+
+def _normalize_tool_schemas() -> None:
+    """Shape every tool's inputSchema like a hand-written MCP tool.
+
+    FastMCP/pydantic derive the inputSchema from the function signature and add a per-
+    property and top-level ``title`` but no ``description``. This strips those titles,
+    attaches descriptions from :data:`_PARAM_DESCRIPTIONS`, and sets
+    ``additionalProperties: false``. The ``outputSchema`` is left untouched (kept, like the
+    reference servers — its titles come from the return-model schema and are expected).
+    """
+    for tool in mcp._tool_manager.list_tools():
+        schema = tool.parameters
+        if not isinstance(schema, dict):
+            continue
+        schema.pop("title", None)
+        schema.setdefault("additionalProperties", False)
+        for pname, pschema in (schema.get("properties") or {}).items():
+            if not isinstance(pschema, dict):
+                continue
+            pschema.pop("title", None)
+            desc = _PARAM_DESCRIPTIONS.get(pname)
+            if desc and "description" not in pschema:
+                pschema["description"] = desc
+
+
 _apply_catalog_meta()
+_normalize_tool_schemas()
 
 
 @mcp.resource("catalog://tools", name="Tool catalog", mime_type="application/json")
