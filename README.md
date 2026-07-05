@@ -4,6 +4,8 @@
 
 [![gigwa-mcp MCP server](https://glama.ai/mcp/servers/gkanogiannis/gigwa-mcp/badges/card.svg)](https://glama.ai/mcp/servers/gkanogiannis/gigwa-mcp)
 
+[![MCP Badge](https://lobehub.com/badge/mcp/gkanogiannis-gigwa-mcp)](https://lobehub.com/mcp/gkanogiannis-gigwa-mcp)
+
 # Gigwa MCP Server
 
 An [MCP](https://modelcontextprotocol.io) server that drives a local or remote
@@ -39,6 +41,7 @@ genebanks, but works with any Gigwa instance.
   - [Quick start](#quick-start)
   - [Tool reference](#tool-reference)
   - [Prompts \& resources](#prompts--resources)
+  - [Skills](#skills)
   - [Usage scenarios](#usage-scenarios)
   - [Output files](#output-files)
   - [Visualizing results](#visualizing-results)
@@ -56,6 +59,7 @@ genebanks, but works with any Gigwa instance.
   - [Project layout](#project-layout)
   - [Testing](#testing)
   - [Changelog](#changelog)
+    - [v1.5.0 — Agent Skills](#v150--agent-skills)
     - [v1.4.16 — anonymous access \& fast-fail timeouts](#v1416--anonymous-access--fast-fail-timeouts)
     - [v1.3.4 — tool catalog, EDAM annotations \& progress reporting](#v134--tool-catalog-edam-annotations--progress-reporting)
     - [v1.2.0 — server-side search, filtered analysis \& export](#v120--server-side-search-filtered-analysis--export)
@@ -505,6 +509,25 @@ support them, and in directories like glama.ai).
 | `catalog://tools` | categorised catalog of all tools with their EDAM operation/topic tags |
 | `gigwa://server/info` | configured connection info (target URL + auth mode); no network call |
 
+## Skills
+
+The repo also ships **Agent Skills** (the open [`SKILL.md` standard](https://github.com/agentskills/agentskills))
+under [`skills/`](skills/) — task-oriented guides that teach an agent how to drive the tools
+above. They mirror the five workflow prompts and are discoverable on the
+[LobeHub Skills Marketplace](https://lobehub.com/skills) and other `SKILL.md` directories.
+The capability stays in the MCP server; the skills just sequence and explain the tools.
+
+| Skill | Mirrors prompt | What it does |
+|-------|----------------|--------------|
+| `gigwa-import-and-qc` | `import_and_qc` | import DArTseq/VCF, then the full QC + audit and a clean/not-clean judgement |
+| `gigwa-diversity-report` | `diversity_report` | diversity + structure + relatedness (PCA, structure, kinship, tree; optional by-group/Fst) |
+| `gigwa-qc-triage` | `qc_triage` | full QC suite on an imported run → go/no-go verdict |
+| `gigwa-explore-instance` | `explore_instance` | no-arg instance survey + health check |
+| `gigwa-region-scan` | `region_scan` | variant density + local diversity within one region |
+
+See [`skills/README.md`](skills/README.md) for the layout, prerequisites, and how to validate
+or install them.
+
 ## Usage scenarios
 
 **A. Import a DArTseq report, genome-anchored.** Map the tag sequences once, inspect, then
@@ -738,6 +761,7 @@ gigwa_mcp/
                         #   diversity, audit
 scripts/                # run_import_audit.py, run_qc_diversity_validation.py (generic)
 docs/                   # make_example_figures.py + img/ (README figures)
+skills/                 # Agent Skills (SKILL.md) mirroring the 5 prompts (for LobeHub etc.)
 tests/                  # pytest suite (mocked client + synthetic fixtures)
 ```
 
@@ -755,6 +779,15 @@ statistics against hand-computed values; `test_genotypes.py` exercises VCF parsi
 callset-name mapping with a mock client. The suite needs no live Gigwa server.
 
 ## Changelog
+
+### v1.5.0 — Agent Skills
+
+- **Agent Skills.** A new [`skills/`](skills/) folder ships five Agent Skills (the open
+  [`SKILL.md` standard](https://github.com/agentskills/agentskills)) mirroring the five
+  workflow prompts — `gigwa-import-and-qc`, `gigwa-diversity-report`, `gigwa-qc-triage`,
+  `gigwa-explore-instance`, `gigwa-region-scan` — discoverable on the
+  [LobeHub Skills Marketplace](https://lobehub.com/skills) and other `SKILL.md` directories.
+  [Skills](#skills).
 
 ### v1.4.16 — anonymous access & fast-fail timeouts
 
