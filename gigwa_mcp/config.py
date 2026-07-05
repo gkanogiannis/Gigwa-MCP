@@ -36,6 +36,79 @@ def _find_dotenv(start: Path | None = None) -> Path | None:
     return None
 
 
+def _maybe_load_dotenv() -> None:
+    """Load a nearby ``.env`` into the process environment, if python-dotenv is present."""
+    if load_dotenv is not None:
+        env_path = _find_dotenv()
+        if env_path is not None:
+            load_dotenv(env_path)
+
+
+def _env_float(name: str, default: float) -> float:
+    """Read *name* from the environment as a float, falling back to *default* on error."""
+    try:
+        return float(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _env_timeouts() -> tuple[float, float]:
+    """(read/write timeout, connect timeout) from ``GIGWA_TIMEOUT``/``GIGWA_CONNECT_TIMEOUT``."""
+    return _env_float("GIGWA_TIMEOUT", 120.0), _env_float("GIGWA_CONNECT_TIMEOUT", 10.0)
+
+
+def _profile_key(profile: str) -> str:
+    """Env-var suffix for a named credential *profile* (upper-cased, non-alnum -> ``_``)."""
+    return "".join(ch if ch.isalnum() else "_" for ch in profile.strip()).upper()
+
+
+def _normalize_base_url(url: str) -> str:
+    """Normalise a user-supplied Gigwa base URL.
+
+    Accepts what a person types conversationally — a bare ``host:port`` (e.g. from
+    "connect to abc.xyz:123") gets an ``https://`` scheme prepended; an explicit
+    ``http://``/``https://`` is left as-is. Trailing slashes are trimmed (``rest_url``
+    re-adds the ``/rest`` suffix).
+    """
+    url = (url or "").strip()
+    if not url:
+        raise GigwaConfigError("A Gigwa base URL is required (e.g. https://host:port/gigwa).")
+    if "://" not in url:
+        url = f"https://{url}"
+    return url.rstrip("/")
+
+
+def resolve_credentials(profile: str | None = None, *, anonymous: bool = False) -> tuple[str, str]:
+    """Resolve ``(username, password)`` for a connection, **without touching the chat**.
+
+    Credentials are read from the *environment* (never passed through the model):
+    ``anonymous=True`` -> ``("", "")``; a named *profile* -> ``GIGWA_USER_<PROFILE>`` /
+    ``GIGWA_PASS_<PROFILE>``; otherwise the default ``GIGWA_USER`` / ``GIGWA_PASS``.
+    Both of a pair must be present (or neither) — a lone one raises, as does a named
+    profile with no matching variables (likely a typo, so we surface it).
+    """
+    if anonymous:
+        return "", ""
+    if profile:
+        key = _profile_key(profile)
+        user_var, pass_var = f"GIGWA_USER_{key}", f"GIGWA_PASS_{key}"
+    else:
+        user_var, pass_var = "GIGWA_USER", "GIGWA_PASS"
+    username = os.environ.get(user_var) or ""
+    password = os.environ.get(pass_var) or ""
+    if bool(username) != bool(password):
+        raise GigwaConfigError(
+            f"Set both {user_var} and {pass_var} to authenticate, or neither for "
+            "anonymous access — got only one."
+        )
+    if profile and not username:
+        raise GigwaConfigError(
+            f"No credentials found for profile '{profile}': set {user_var} and {pass_var} "
+            "in the environment, or pass anonymous=True."
+        )
+    return username, password
+
+
 @dataclass(frozen=True)
 class GigwaConfig:
     base_url: str
@@ -61,10 +134,7 @@ class GigwaConfig:
 
     @classmethod
     def from_env(cls) -> "GigwaConfig":
-        if load_dotenv is not None:
-            env_path = _find_dotenv()
-            if env_path is not None:
-                load_dotenv(env_path)
+        _maybe_load_dotenv()
 
         base_url = os.environ.get("GIGWA_URL")
         if not base_url:
@@ -77,26 +147,42 @@ class GigwaConfig:
                 file=sys.stderr,
             )
         # Both must be present to authenticate; otherwise fall back to anonymous access.
-        username = os.environ.get("GIGWA_USER") or ""
-        password = os.environ.get("GIGWA_PASS") or ""
-        if bool(username) != bool(password):
-            raise GigwaConfigError(
-                "Set both GIGWA_USER and GIGWA_PASS to authenticate, or neither for "
-                "anonymous access — got only one."
-            )
-
-        try:
-            timeout = float(os.environ.get("GIGWA_TIMEOUT", "120"))
-        except ValueError:
-            timeout = 120.0
-
-        try:
-            connect_timeout = float(os.environ.get("GIGWA_CONNECT_TIMEOUT", "10"))
-        except ValueError:
-            connect_timeout = 10.0
+        username, password = resolve_credentials()
+        timeout, connect_timeout = _env_timeouts()
 
         return cls(
             base_url=base_url,
+            username=username,
+            password=password,
+            timeout=timeout,
+            connect_timeout=connect_timeout,
+        )
+
+    @classmethod
+    def for_connection(
+        cls, base_url: str, *, profile: str | None = None, anonymous: bool = False
+    ) -> "GigwaConfig":
+        """Build a config for a runtime connection switch (the ``gigwa_connect`` tool).
+
+        Same shape as :meth:`from_env` — the URL is normalised, timeouts come from the
+        environment — but the target *base_url* is given explicitly and credentials are
+        resolved out-of-band via :func:`resolve_credentials` (``profile``/``anonymous``),
+        so no secret is ever passed as a tool argument.
+        """
+        _maybe_load_dotenv()
+        url = _normalize_base_url(base_url)
+        if not anonymous and profile is None:
+            # No profile named: the default GIGWA_USER/GIGWA_PASS belong to the *configured*
+            # server, so only reuse them when reconnecting to that same URL. Pointing at any
+            # other server without an explicit profile defaults to anonymous — the home
+            # credentials are never transmitted to a different host unasked.
+            home = _normalize_base_url(os.environ.get("GIGWA_URL") or DEFAULT_GIGWA_URL)
+            if url != home:
+                anonymous = True
+        username, password = resolve_credentials(profile, anonymous=anonymous)
+        timeout, connect_timeout = _env_timeouts()
+        return cls(
+            base_url=url,
             username=username,
             password=password,
             timeout=timeout,

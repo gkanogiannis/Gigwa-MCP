@@ -33,6 +33,11 @@ required.
 
 ## Step-by-step workflow
 
+0. **(Optional) Point at a different server** — `gigwa_connect(url, profile?, anonymous?)`
+   switches the active Gigwa instance at runtime (no restart). Credentials come from the
+   environment (default `GIGWA_USER`/`GIGWA_PASS`, or `GIGWA_USER_<PROFILE>`/
+   `GIGWA_PASS_<PROFILE>` when a `profile` is named) — never from the chat. The switch is
+   verified before it takes effect and lasts for the session.
 1. **Connectivity** — `gigwa_server_info()`: confirms the URL is reachable and reports the
    server version and the authenticated user (or anonymous).
 2. **Enumerate** —

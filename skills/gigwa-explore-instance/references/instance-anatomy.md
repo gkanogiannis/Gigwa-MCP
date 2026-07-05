@@ -45,11 +45,16 @@ Besides the tools, the `gigwa-mcp` server exposes two **resources** (network-fre
   `GIGWA_PASS`.
 - `GIGWA_URL` defaults to the public ICARDA instance (`https://gigwa.icarda.org:8443/gigwa`)
   when unset.
+- **Runtime switch** — `gigwa_connect(url, profile?, anonymous?)` re-points the session at a
+  different server without a restart. It reads credentials from the environment (a named
+  `profile` maps to `GIGWA_USER_<PROFILE>`/`GIGWA_PASS_<PROFILE>`), so no secret is ever
+  typed into the chat; the new connection is verified before it takes effect.
 
 ## EDAM annotations (from `TOOL_CATALOG`)
 
 | Tool | operation | topic |
 |---|---|---|
+| `gigwa_connect` | operation_2409 Data handling | topic_3071 Data management |
 | `gigwa_server_info` | operation_2422 Data retrieval | topic_3071 Data management |
 | `list_content` | operation_2422 Data retrieval | topic_3071 Data management |
 | `list_variant_sets` | operation_2422 Data retrieval | topic_0199 Genetic variation |

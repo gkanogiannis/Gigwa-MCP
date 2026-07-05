@@ -1,21 +1,21 @@
-"""Connection / inventory tools: check the server and list its content."""
+"""Connection / inventory tools: connect/switch server, check it, and list its content."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from ..server import get_client, mcp
+from ..client import GigwaClient
+from ..config import GigwaConfig
+from ..server import get_client, mcp, set_client
 
 
-@mcp.tool()
-def gigwa_server_info() -> str:
-    """Check connectivity to the configured Gigwa server.
+def _verify_and_describe(client: GigwaClient) -> str:
+    """Force a live round-trip against *client* and render its connection summary.
 
-    Generates an auth token with the configured credentials and reports the
-    server URL and (best-effort) version. Use this first to confirm the
-    connection works before importing data.
+    Raises if the server is unreachable or rejects the credentials (so callers can treat
+    a return value as "the connection works"). Shared by ``gigwa_server_info`` and the
+    ``gigwa_connect`` switch so both report identically.
     """
-    client = get_client()
     version = client.server_version()
     # Force a round-trip so we fail fast on bad credentials / unreachable host (and, when
     # authenticated, exercise token generation).
@@ -38,6 +38,46 @@ def gigwa_server_info() -> str:
         if info.get("administrator") or info.get("admin"):
             lines.append("Administrator: yes")
     return "\n".join(lines)
+
+
+@mcp.tool()
+def gigwa_connect(url: str, profile: str | None = None, anonymous: bool = False) -> str:
+    """Switch the active Gigwa server at runtime — no restart needed.
+
+    Re-points every subsequent tool (and the gigwa:// resources) at *url* for the rest of
+    the session. Credentials are **never passed through the chat**: they are resolved from
+    the environment — a named *profile* reads GIGWA_USER_<PROFILE>/GIGWA_PASS_<PROFILE>;
+    anonymous=True sends none. With neither, the default GIGWA_USER/GIGWA_PASS are used
+    **only when reconnecting to the configured GIGWA_URL** — switching to any other server
+    without a profile connects anonymously, so your home credentials are never transmitted
+    to a different host unasked. The new connection is verified with a live round-trip before
+    this returns; on failure the previous connection is restored.
+    """
+    config = GigwaConfig.for_connection(url, profile=profile, anonymous=anonymous)
+    new_client = GigwaClient(config)
+    previous = set_client(new_client)
+    try:
+        summary = _verify_and_describe(new_client)
+    except Exception:
+        # Roll back to the previous connection and discard the failed one.
+        set_client(previous)
+        new_client.close()
+        raise
+    # Success: tear down the old connection's HTTP pool (the singleton is otherwise never closed).
+    if previous is not None and previous is not new_client:
+        previous.close()
+    return "Switched Gigwa connection.\n" + summary
+
+
+@mcp.tool()
+def gigwa_server_info() -> str:
+    """Check connectivity to the configured Gigwa server.
+
+    Generates an auth token with the configured credentials and reports the
+    server URL and (best-effort) version. Use this first to confirm the
+    connection works before importing data.
+    """
+    return _verify_and_describe(get_client())
 
 
 def _render_summary(summary: dict[str, Any]) -> str:

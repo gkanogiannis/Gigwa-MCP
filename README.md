@@ -87,6 +87,7 @@ never modify the data in Gigwa.
 
 | Tool | What it does |
 |------|--------------|
+| `gigwa_connect` | Switch the active Gigwa server at runtime (credentials from the environment, never the chat) |
 | `gigwa_server_info` | Verify connectivity/auth and report the server version |
 | `list_content` | List databases → projects → runs on the instance |
 | `import_dartseq` | Call genotypes from DArTseq SNP/Silico xlsx report(s) → VCF and import (optionally genome-anchored via `reference_fasta`) |
@@ -371,6 +372,24 @@ instance exposes (discovery, `list_content`/`list_variant_sets`, `search_callset
 `count_variants`, and the read-only analyses on public data). Set both to authenticate
 (required for import/write operations and private databases); setting only one is an error.
 
+**Switching servers mid-conversation.** The `gigwa_connect` tool re-points every subsequent
+tool at a different Gigwa server **without a restart** — e.g. *"connect to
+`https://other.example:8443/gigwa`"*. The new connection is verified with a live round-trip
+before it takes effect (a failure rolls back to the previous one), and the change lasts for
+the session (env config is restored on restart). **Credentials never pass through the chat:**
+to reach a server that needs credentials, pre-set a **named profile** in the environment and
+reference it by name — `gigwa_connect(url, profile="prod")` reads `GIGWA_USER_PROD` /
+`GIGWA_PASS_PROD`. Use `gigwa_connect(url, anonymous=true)` to force unauthenticated access.
+The default `GIGWA_USER`/`GIGWA_PASS` are reused **only when reconnecting to the configured
+`GIGWA_URL`** — switching to a *different* server without a profile connects anonymously, so
+your home credentials are never sent to another host by accident.
+
+```dotenv
+# A named credential profile for gigwa_connect(url, profile="prod")
+GIGWA_USER_PROD=your_user
+GIGWA_PASS_PROD=your_password
+```
+
 ## Connecting from an MCP client
 
 Add a stdio server entry (Claude Desktop `claude_desktop_config.json` or Claude Code MCP
@@ -397,10 +416,13 @@ published package on demand with no separate install:
 Or with an explicit interpreter path (`"command": "/abs/path/to/venv/bin/gigwa-mcp"`,
 no `args`) if you installed it into a virtual environment.
 
-Credentials live in this config, so there is no per-chat "connect" step and every tool call
-authenticates on its own (token generated and refreshed automatically). To drive
-several Gigwa servers, register one entry each (e.g. `gigwa-local`, `gigwa-remote`)
-with its own `GIGWA_URL`/credentials and name the one you mean in the prompt.
+Credentials live in this config and every tool call authenticates on its own (token
+generated and refreshed automatically), so no per-chat "connect" step is required. To drive
+several Gigwa servers you can either register one entry each (e.g. `gigwa-local`,
+`gigwa-remote`) with its own `GIGWA_URL`/credentials and name the one you mean in the prompt,
+**or** stay in one session and switch at runtime with the `gigwa_connect` tool (see
+*Switching servers mid-conversation* above) — pre-set a `GIGWA_USER_<PROFILE>` /
+`GIGWA_PASS_<PROFILE>` pair per server so no secret is ever typed into the chat.
 
 ## Quick start
 
@@ -443,6 +465,7 @@ args `max_markers` / `method` (`"vcf"` | `"allelematrix"`), and `region`
 
 | Tool | Key arguments | Returns / writes |
 |------|---------------|------------------|
+| `gigwa_connect` | `url`, `profile?`, `anonymous=False` | switches the active server (verified); creds from env (`GIGWA_USER[_PROFILE]`), never the chat |
 | `gigwa_server_info` | (none) | server version + auth check |
 | `list_content` | (none) | database → project → run hierarchy |
 | `import_dartseq` | `snp_xlsx?`, `silico_xlsx?`, `module`, `project`, `run`, `ploidy=2`, `reference_fasta?`, `positions_csv?`, `wait=True` | imports a DArTseq report; marker/sample counts + final status |
@@ -779,6 +802,16 @@ statistics against hand-computed values; `test_genotypes.py` exercises VCF parsi
 callset-name mapping with a mock client. The suite needs no live Gigwa server.
 
 ## Changelog
+
+### v1.6.0 — runtime server switch
+
+- **Switch servers mid-conversation.** A new `gigwa_connect(url, profile?, anonymous?)` tool
+  re-points every subsequent tool at a different Gigwa instance without restarting the
+  server. The switch is verified with a live round-trip before it takes effect (a failure
+  rolls back to the previous connection) and lasts for the session. **Credentials never pass
+  through the chat:** they are resolved from the environment — the default `GIGWA_USER`/
+  `GIGWA_PASS`, or a named profile's `GIGWA_USER_<PROFILE>`/`GIGWA_PASS_<PROFILE>` — or
+  omitted with `anonymous=true`. See [Configuration](#configuration).
 
 ### v1.5.0 — Agent Skills
 

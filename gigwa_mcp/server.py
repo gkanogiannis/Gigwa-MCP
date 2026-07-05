@@ -46,6 +46,22 @@ def get_client() -> GigwaClient:
     return _client
 
 
+def set_client(client: GigwaClient | None) -> GigwaClient | None:
+    """Install *client* as the process-wide client and return the previous one, if any.
+
+    Backs the runtime connection switch (``gigwa_connect``): every tool and the
+    ``gigwa://server/info`` resource resolve the connection through :func:`get_client`,
+    so replacing the singleton here re-points them all at once. The displaced client is
+    **returned but not closed** — the caller owns its lifecycle, so a failed switch can
+    restore it (roll back) and a successful one can close the old HTTP pool. Passing
+    ``None`` resets to lazy env construction on the next :func:`get_client`.
+    """
+    global _client
+    previous = _client
+    _client = client
+    return previous
+
+
 def progress_tool(**tool_kwargs: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Register a *synchronous* tool that can stream progress, like ``@mcp.tool()``.
 
@@ -142,6 +158,10 @@ class ToolInfo:
 
 TOOL_CATALOG: dict[str, ToolInfo] = {
     # -- Connection & discovery --
+    "gigwa_connect": ToolInfo(
+        "Connection & discovery",
+        "Switch the active Gigwa server at runtime (credentials resolved from the environment).",
+        _HANDLE, _T_DATA),
     "gigwa_server_info": ToolInfo(
         "Connection & discovery", "Check connectivity/auth and report the server version.",
         _RETRIEVE, _T_DATA),
@@ -269,6 +289,9 @@ def catalog_drift() -> tuple[set[str], set[str]]:
 # FastMCP/pydantic only auto-adds a ``title`` per property, so this supplies the
 # human-readable ``description`` that hand-written MCP schemas carry.
 _PARAM_DESCRIPTIONS: dict[str, str] = {
+    "url": "Target Gigwa base URL to connect to (e.g. https://host:port/gigwa); a bare host:port assumes https.",
+    "profile": "Optional credential profile: reads GIGWA_USER_<PROFILE>/GIGWA_PASS_<PROFILE> from the environment (never typed in chat). Omit to use the default GIGWA_USER/GIGWA_PASS.",
+    "anonymous": "Connect without credentials (Gigwa's anonymous public/read-only access).",
     "variant_set_db_id": "BrAPI variantSetDbId identifying the run (MODULE§project§run); from list_variant_sets / list_content.",
     "method": "Genotype source: 'vcf' (full export, cached) or 'allelematrix' (paged, server-side subset).",
     "max_markers": "Cap the number of markers analysed (evenly-spaced subsample); omit to use all.",
