@@ -30,6 +30,8 @@ genebanks, but works with any Gigwa instance.
   - [How it works](#how-it-works)
   - [Requirements](#requirements)
   - [Installation](#installation)
+    - [Find \& try it on Glama](#find--try-it-on-glama)
+    - [Install it yourself](#install-it-yourself)
     - [Add it to Claude Code (the simple version)](#add-it-to-claude-code-the-simple-version)
     - [Run with Docker](#run-with-docker)
   - [Configuration](#configuration)
@@ -176,6 +178,17 @@ Core Python dependencies (installed automatically): `mcp`, `httpx`, `pandas`, `o
 `numpy`, `python-dotenv`, `scikit-allel`, `scipy`, `mappy`.
 
 ## Installation
+
+### Find & try it on Glama
+
+`gigwa-mcp` is listed in the [Glama MCP directory](https://glama.ai/mcp/servers/gkanogiannis/gigwa-mcp) —
+the quickest way to see what it does. Browse its tools, prompts and resources and **try it
+live in the in-browser MCP Inspector**: it defaults to the public ICARDA instance with
+anonymous access, so **no setup or credentials are needed** for a first look. Glama also
+generates a ready-to-paste connection config for common MCP clients; under the hood that
+just runs `uvx gigwa-mcp` (or the Docker image) — the same as the steps below.
+
+### Install it yourself
 
 **From PyPI** (recommended):
 
