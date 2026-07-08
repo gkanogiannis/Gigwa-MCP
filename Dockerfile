@@ -1,7 +1,14 @@
-# Gigwa MCP server — stdio transport, launched by an MCP client via `docker run -i`.
+# Gigwa MCP server  stdio or HTTP transport.
 #
 #   docker build -t gigwa-mcp .
+#
+# STDIO transport (default, for MCP client via docker run -i):
 #   docker run -i --rm -e GIGWA_URL -e GIGWA_USER -e GIGWA_PASS -v "$PWD:/data" gigwa-mcp
+#
+# HTTP transport (expose port, e.g. 8184):
+#   docker run -d --rm -p 8184:8184 -e GIGWA_URL -e GIGWA_USER -e GIGWA_PASS gigwa-mcp
+#   # or with custom port:
+#   docker run -d --rm -p 9000:9000 -e GIGWA_MCP_PORT=9000 -e GIGWA_URL -e GIGWA_USER -e GIGWA_PASS gigwa-mcp
 #
 # See README ("Run with Docker") for MCP client config, volume mounts, and networking.
 #
@@ -47,4 +54,12 @@ RUN useradd --create-home --uid 1000 gigwa \
 USER gigwa
 WORKDIR /data
 
-ENTRYPOINT ["gigwa-mcp"]
+# Default port for HTTP transport (can be overridden via -e GIGWA_MCP_PORT)
+ENV GIGWA_MCP_PORT=8184
+
+# Entrypoint script to handle both STDIO and HTTP modes
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["gigwa-mcp"]
