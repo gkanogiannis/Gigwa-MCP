@@ -24,7 +24,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run the Gigwa MCP server with STDIO or HTTP transport."
     )
-    
+
     # Mutually exclusive group for transport options
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
@@ -39,9 +39,9 @@ def main() -> None:
         default=None,
         help="Run with StreamableHTTP transport on the specified port",
     )
-    
+
     args = parser.parse_args()
-    
+
     if args.port is not None:
         run_http_server(args.port)
     else:
@@ -51,14 +51,14 @@ def main() -> None:
 def run_http_server(port: int) -> None:
     """Run the MCP server with StreamableHTTP transport using uvicorn."""
     import uvicorn
-    
+
     app = mcp.streamable_http_app()
-    
+
     # Print to stdout before uvicorn takes over logging
-    sys.stdout.write(f"Starting Gigwa MCP server on http://localhost:{port}\n")
+    sys.stdout.write(f"Starting Gigwa MCP server on http://localhost:{port}/mcp\n")
     sys.stdout.write("Press Ctrl+C to stop\n")
     sys.stdout.flush()
-    
+
     uvicorn.run(
         app,
         host="0.0.0.0",

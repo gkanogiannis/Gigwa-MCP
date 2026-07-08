@@ -31,6 +31,9 @@ except PackageNotFoundError:  # running from a source tree without an install
     __version__ = "0.0.0"
 
 mcp = FastMCP("gigwa")
+# Ensure the StreamableHTTP transport mounts at /mcp by default.
+# This matches the MCP client expectation and the protocol's common transport path.
+mcp.settings.streamable_http_path = "/mcp"
 # Report our package version as the MCP serverInfo version (FastMCP otherwise leaves it
 # unset, so clients/registries show the mcp SDK version instead of gigwa-mcp's).
 mcp._mcp_server.version = __version__
