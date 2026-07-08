@@ -45,6 +45,10 @@ ENV PYTHONUNBUFFERED=1 \
 # Bring in the ready-built venv from the builder (no compiler in this layer).
 COPY --from=builder /opt/venv /opt/venv
 
+# Entrypoint script to handle both STDIO and HTTP modes
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 # Run as non-root. WORKDIR is a mount point: analysis results are written to
 # ./gigwa_results/<module>/ relative to the working directory, so mounting a host
 # dir at /data persists outputs and lets imports read host files by their /data path.
@@ -56,10 +60,6 @@ WORKDIR /data
 
 # Default port for HTTP transport (can be overridden via -e GIGWA_MCP_PORT)
 ENV GIGWA_MCP_PORT=8184
-
-# Entrypoint script to handle both STDIO and HTTP modes
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["gigwa-mcp"]
