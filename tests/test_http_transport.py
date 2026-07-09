@@ -49,3 +49,30 @@ def test_streamable_http_initialize_accepts_json_only_accept_header(monkeypatch)
         )
 
     assert response.status_code != 406
+
+
+def test_streamable_http_accepts_notifications_initialized_with_id(monkeypatch) -> None:
+    monkeypatch.setenv("GIGWA_MCP_ALLOWED_HOSTS", "testserver,gigwa-mcp")
+    configure_http_transport_security()
+    _reset_streamable_http_session_manager()
+
+    app = mcp.streamable_http_app()
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 123,
+        "method": "notifications/initialized",
+        "params": None,
+    }
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/mcp",
+            json=payload,
+            headers={
+                "accept": "application/json",
+                "content-type": "application/json",
+                "host": "gigwa-mcp:8184",
+            },
+        )
+
+    assert response.status_code == 202
