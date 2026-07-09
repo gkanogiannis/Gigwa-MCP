@@ -55,3 +55,7 @@ def test_catalog_resource_lists_all_tools():
     assert data["tool_count"] == len(server.TOOL_CATALOG)
     listed = {t["name"] for cat in data["categories"] for t in cat["tools"]}
     assert listed == set(server.TOOL_CATALOG)
+
+
+def test_default_http_mount_path():
+    assert getattr(server.mcp.settings, "streamable_http_path", None) == "/mcp"

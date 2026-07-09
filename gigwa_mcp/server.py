@@ -19,6 +19,7 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Callable
 
 import anyio
+from starlette.types import ASGIApp, Receive, Scope, Send
 from mcp.server.fastmcp import Context, FastMCP
 
 from .client import GigwaClient
@@ -31,9 +32,73 @@ except PackageNotFoundError:  # running from a source tree without an install
     __version__ = "0.0.0"
 
 mcp = FastMCP("gigwa")
+# Ensure the StreamableHTTP transport mounts at /mcp by default.
+# This matches the MCP client expectation and the protocol's common transport path.
+mcp.settings.streamable_http_path = "/mcp"
+# Prefer JSON responses for StreamableHTTP POST requests. Many MCP clients (including
+# the Drupal mcp_client integration) only advertise application/json and otherwise
+# hit the SDK's 406 Not Acceptable path when the server expects SSE negotiation.
+mcp.settings.json_response = True
+# Normalize malformed notification requests from clients that send
+# notifications/initialized with an id field. This is tolerated here to
+# remain compatible with buggy MCP clients while preserving normal behavior.
+
+
+def _normalize_streamable_http_message_body(body: bytes) -> bytes:
+    try:
+        payload = json.loads(body)
+    except (TypeError, ValueError):
+        return body
+
+    if (
+        isinstance(payload, dict)
+        and payload.get("method") == "notifications/initialized"
+        and "id" in payload
+    ):
+        payload.pop("id", None)
+        return json.dumps(payload).encode("utf-8")
+
+    return body
+
+
+def _normalize_streamable_http_app(app: ASGIApp) -> ASGIApp:
+    async def wrapper(scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope["method"] == "POST" and scope["path"] == mcp.settings.streamable_http_path:
+            body = bytearray()
+            more_body = True
+            while more_body:
+                message = await receive()
+                if message["type"] != "http.request":
+                    await app(scope, receive, send)
+                    return
+                body.extend(message.get("body", b""))
+                more_body = message.get("more_body", False)
+
+            normalized_body = _normalize_streamable_http_message_body(bytes(body))
+
+            async def receive_with_normalized_body() -> dict[str, Any]:
+                return {"type": "http.request", "body": normalized_body, "more_body": False}
+
+            await app(scope, receive_with_normalized_body, send)
+            return
+        await app(scope, receive, send)
+
+    return wrapper
+
+
 # Report our package version as the MCP serverInfo version (FastMCP otherwise leaves it
 # unset, so clients/registries show the mcp SDK version instead of gigwa-mcp's).
 mcp._mcp_server.version = __version__
+
+# Wrap the StreamableHTTP app so malformed MCP notification POSTs are normalized.
+# This does not change the underlying SDK behavior for valid clients.
+mcp._original_streamable_http_app = mcp.streamable_http_app  # type: ignore[attr-defined]
+
+
+def _streamable_http_app() -> ASGIApp:
+    return _normalize_streamable_http_app(mcp._original_streamable_http_app())
+
+mcp.streamable_http_app = _streamable_http_app  # type: ignore[attr-defined]
 
 _client: GigwaClient | None = None
 
