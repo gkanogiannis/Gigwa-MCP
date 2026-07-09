@@ -34,6 +34,10 @@ mcp = FastMCP("gigwa")
 # Ensure the StreamableHTTP transport mounts at /mcp by default.
 # This matches the MCP client expectation and the protocol's common transport path.
 mcp.settings.streamable_http_path = "/mcp"
+# Prefer JSON responses for StreamableHTTP POST requests. Many MCP clients (including
+# the Drupal mcp_client integration) only advertise application/json and otherwise
+# hit the SDK's 406 Not Acceptable path when the server expects SSE negotiation.
+mcp.settings.json_response = True
 # Report our package version as the MCP serverInfo version (FastMCP otherwise leaves it
 # unset, so clients/registries show the mcp SDK version instead of gigwa-mcp's).
 mcp._mcp_server.version = __version__
