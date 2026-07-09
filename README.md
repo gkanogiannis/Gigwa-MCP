@@ -59,6 +59,8 @@ genebanks, but works with any Gigwa instance.
   - [Project layout](#project-layout)
   - [Testing](#testing)
   - [Changelog](#changelog)
+    - [v1.7.0 — HTTP transport](#v170--http-transport)
+    - [v1.6.0 — runtime server switch](#v160--runtime-server-switch)
     - [v1.5.0 — Agent Skills](#v150--agent-skills)
     - [v1.4.16 — anonymous access \& fast-fail timeouts](#v1416--anonymous-access--fast-fail-timeouts)
     - [v1.3.4 — tool catalog, EDAM annotations \& progress reporting](#v134--tool-catalog-edam-annotations--progress-reporting)
@@ -802,6 +804,18 @@ statistics against hand-computed values; `test_genotypes.py` exercises VCF parsi
 callset-name mapping with a mock client. The suite needs no live Gigwa server.
 
 ## Changelog
+
+### v1.7.0 — HTTP transport
+
+- **Streamable HTTP transport.** The server can now run over HTTP in addition to stdio:
+  `python -m gigwa_mcp --port 8184` serves the MCP StreamableHTTP endpoint at `/mcp` (stdio
+  stays the default; `--stdio` is explicit). Adds Docker/entrypoint wiring, DNS-rebinding /
+  allowed-host protection configurable via `GIGWA_MCP_ALLOWED_HOSTS` /
+  `GIGWA_MCP_ALLOWED_ORIGINS` / `GIGWA_MCP_DISABLE_DNS_REBINDING_PROTECTION`, JSON responses
+  for clients that only advertise `application/json`, and tolerance for malformed
+  `notifications/initialized` POSTs. HTTP mode binds loopback (`127.0.0.1`) by default; set
+  `GIGWA_MCP_HOST=0.0.0.0` to accept remote connections (the Docker image sets it). Contributed
+  by @guignonv (PR #1).
 
 ### v1.6.0 — runtime server switch
 

@@ -60,6 +60,9 @@ WORKDIR /data
 
 # Default port for HTTP transport (can be overridden via -e GIGWA_MCP_PORT)
 ENV GIGWA_MCP_PORT=8184
+# Bind all interfaces inside the container so the published port is reachable. The server
+# itself defaults to loopback (127.0.0.1) for safety; the container opts into 0.0.0.0 here.
+ENV GIGWA_MCP_HOST=0.0.0.0
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["gigwa-mcp"]

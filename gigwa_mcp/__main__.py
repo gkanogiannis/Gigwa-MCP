@@ -107,14 +107,19 @@ def run_http_server(port: int) -> None:
     configure_http_transport_security()
     app = mcp.streamable_http_app()
 
+    # Bind loopback by default so a local `--port` run is not exposed on every network
+    # interface. Containers/remote deployments opt into all-interfaces by setting
+    # GIGWA_MCP_HOST=0.0.0.0 (the Docker image sets it; see Dockerfile).
+    host = os.getenv("GIGWA_MCP_HOST", "127.0.0.1").strip() or "127.0.0.1"
+
     # Print to stdout before uvicorn takes over logging
-    sys.stdout.write(f"Starting Gigwa MCP server on http://localhost:{port}/mcp\n")
+    sys.stdout.write(f"Starting Gigwa MCP server on http://{host}:{port}/mcp\n")
     sys.stdout.write("Press Ctrl+C to stop\n")
     sys.stdout.flush()
 
     uvicorn.run(
         app,
-        host="0.0.0.0",
+        host=host,
         port=port,
         log_level="info",
         # Disable uvicorn's default server header for cleaner logs

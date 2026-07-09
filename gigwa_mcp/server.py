@@ -44,6 +44,14 @@ mcp.settings.json_response = True
 # remain compatible with buggy MCP clients while preserving normal behavior.
 
 
+# The only body we rewrite (notifications/initialized) is a tiny fixed-shape message, so we
+# only buffer bodies up to this size. A larger POST is streamed straight through to the SDK
+# untouched — this wrapper must not become an unbounded in-memory buffer sitting in front of
+# the transport's Host/DNS-rebinding checks (else a large body could exhaust memory even from
+# a disallowed host, before those checks run).
+_MAX_NORMALIZE_BODY_BYTES = 64 * 1024
+
+
 def _normalize_streamable_http_message_body(body: bytes) -> bytes:
     try:
         payload = json.loads(body)
@@ -61,6 +69,24 @@ def _normalize_streamable_http_message_body(body: bytes) -> bytes:
     return body
 
 
+def _replay_receive(prefix: bytes, more_body: bool, receive: Receive) -> Receive:
+    """A receive() that re-emits an already-consumed *prefix*, then defers to *receive*.
+
+    Lets us hand the buffered-so-far bytes plus the untouched remainder of the stream to the
+    downstream app without holding the whole body in memory.
+    """
+    emitted = False
+
+    async def _recv() -> Any:
+        nonlocal emitted
+        if not emitted:
+            emitted = True
+            return {"type": "http.request", "body": prefix, "more_body": more_body}
+        return await receive()
+
+    return _recv
+
+
 def _normalize_streamable_http_app(app: ASGIApp) -> ASGIApp:
     async def wrapper(scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http" and scope["method"] == "POST" and scope["path"] == mcp.settings.streamable_http_path:
@@ -73,6 +99,11 @@ def _normalize_streamable_http_app(app: ASGIApp) -> ASGIApp:
                     return
                 body.extend(message.get("body", b""))
                 more_body = message.get("more_body", False)
+                if len(body) > _MAX_NORMALIZE_BODY_BYTES:
+                    # Far larger than any notification we rewrite: stop buffering and stream
+                    # the rest through untouched (bounded memory; no normalization needed).
+                    await app(scope, _replay_receive(bytes(body), more_body, receive), send)
+                    return
 
             normalized_body = _normalize_streamable_http_message_body(bytes(body))
 
