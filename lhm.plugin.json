@@ -1,0 +1,20 @@
+{
+  "identifier": "gkanogiannis-gigwa-mcp",
+  "name": "Gigwa MCP Server",
+  "version": "1.7.0",
+  "description": "Drive a Gigwa genotyping server: import, server-side variant search, QC and diversity analyses.",
+  "author": "Anestis Gkanogiannis",
+  "authorUrl": "https://github.com/gkanogiannis",
+  "homepage": "https://github.com/gkanogiannis/Gigwa-MCP",
+  "category": "science-education",
+  "tags": [
+    "gigwa",
+    "genotyping",
+    "genomics",
+    "bioinformatics",
+    "vcf",
+    "brapi",
+    "ga4gh",
+    "population-genetics"
+  ]
+}
