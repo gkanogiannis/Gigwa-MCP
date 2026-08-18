@@ -179,8 +179,12 @@ def filter_individuals_by_metadata(variant_set_db_id: str, filters_json: str) ->
     ``filters_json`` is a JSON object mapping each metadata field name (see
     ``list_metadata_values``) to a list of acceptable values, e.g. ``{"GroupK4": ["cA"]}``.
     Multiple fields combine with AND; multiple values for one field combine with OR.
-    Returns the matching individual names, ready to pass to ``export_genotypes``'s
-    ``individuals`` parameter or the diversity tools' ``groups_json``.
+    Returns the matching **individual**-level identifiers, ready to pass directly to
+    ``export_genotypes``'s ``individuals`` parameter or the diversity tools'
+    ``groups_json`` as-is — no need to separately resolve or deduplicate to per-sample/
+    callset ids first: Gigwa's export resolves each individual to all of its samples
+    across runs server-side (verified against the Gigwa server source), including when an
+    individual has more than one sample.
     """
     client = get_client()
     module = module_of(variant_set_db_id)
