@@ -317,6 +317,12 @@ TOOL_CATALOG: dict[str, ToolInfo] = {
     "export_genotypes": ToolInfo(
         "Export", "Export a variant set, or a filtered/selected subset, to a file.",
         _FORMAT, _T_GENVAR),
+    "get_export_progress": ToolInfo(
+        "Export", "Report the status of the current session's running export.",
+        _HANDLE, _T_DATA),
+    "fetch_export_file": ToolInfo(
+        "Export", "Retrieve a completed export started with export_genotypes(wait=False).",
+        _RETRIEVE, _T_DATA),
     # -- Quality control --
     "qc_call_rate": ToolInfo(
         "Quality control", "Per-sample & per-marker call rate; flag low-call entities.",
@@ -411,7 +417,7 @@ _PARAM_DESCRIPTIONS: dict[str, str] = {
     "ploidy": "Sample ploidy (default 2).",
     "skip_monomorphic": "Drop non-variant (monomorphic) markers during import.",
     "clear_project_data": "Replace any existing data in the project before importing.",
-    "wait": "Block until the import finishes (True) or return a progress token immediately (False).",
+    "wait": "Block until the job finishes (True, default) or return immediately once it's kicked off (False) -- an import returns a progress token to poll with get_import_progress, an export returns a download URL to poll with get_export_progress and retrieve with fetch_export_file.",
     "snp_xlsx": "Path to a DArTseq SNP xlsx report.",
     "silico_xlsx": "Path to a Silico-DArT xlsx report.",
     "vcf_path": "Path to the VCF file (.vcf or .vcf.gz) to import.",
@@ -438,6 +444,7 @@ _PARAM_DESCRIPTIONS: dict[str, str] = {
     "metadata_fields": "Individual metadata columns to embed in the export (from get_germplasm_metadata); omit for none.",
     "keep_on_server": "Also leave a copy of the export in the user's Gigwa temp-output area after downloading it here.",
     "filters_json": "JSON object mapping each metadata field name to a list of acceptable values, e.g. {\"GroupK4\": [\"cA\"]} (see list_metadata_values for field/value names). Multiple fields AND together; multiple values for one field OR together.",
+    "download_url": "Download URL returned by export_genotypes(..., wait=False), once get_export_progress reports the export complete.",
     "min_sample_call_rate": "Flag samples with call rate below this (0-1).",
     "min_marker_call_rate": "Flag markers with call rate below this (0-1).",
     "outlier_sd": "Flag points more than this many standard deviations from the mean.",

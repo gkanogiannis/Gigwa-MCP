@@ -204,6 +204,40 @@ def test_export_selection_raises_on_server_error_status():
         assert "boom" in str(exc)
 
 
+def test_start_export_returns_url_without_polling():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/gigwa/exportData"):
+            return httpx.Response(200, text="/gigwaV2/ddl_tmpOutput/u/abc/out.vcf")
+        raise AssertionError(f"no polling/download expected, got {request.url.path}")
+
+    client = make_client(_token_or(handler))
+    url = client.start_export("MOD§1§run1", fmt="VCF")
+    assert url == "/gigwaV2/ddl_tmpOutput/u/abc/out.vcf"
+
+
+def test_export_progress_and_download_export_split():
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/gigwa/progress"):
+            assert "progressToken" not in request.url.params
+            assert request.headers["authorization"] == "Bearer export_t"
+            return httpx.Response(204)  # no export running yet
+        if path.endswith("/out.vcf"):
+            return httpx.Response(200, content=b"DATA")
+        raise AssertionError(f"unexpected path: {path}")
+
+    client = make_client(_token_or(handler))
+    assert client.export_progress() is None  # 204 -> nothing running
+
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as d:
+        dest = Path(d) / "out.vcf"
+        written = client.download_export("/gigwaV2/ddl_tmpOutput/u/abc/out.vcf", dest)
+        assert written.read_bytes() == b"DATA"
+
+
 def test_abort_calls_abort_process():
     seen = {}
 

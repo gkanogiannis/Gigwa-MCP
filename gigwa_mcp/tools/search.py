@@ -212,6 +212,7 @@ def export_genotypes(
     individuals: list[str] | None = None,
     metadata_fields: list[str] | None = None,
     keep_on_server: bool = False,
+    wait: bool = True,
     timeout: float = 1800.0,
 ) -> str:
     """Export a variant set — or a filtered/selected subset of it — to a file.
@@ -226,8 +227,15 @@ def export_genotypes(
     selection-aware export — the same endpoint the Gigwa web UI uses for a filtered
     download — which additionally accepts any format the server advertises, including the
     bgzipped ``"VCF.gz"``. ``keep_on_server`` leaves a copy in the user's Gigwa temp-output
-    area after this downloads it (default False). For large sets this can take a while;
-    raise ``timeout`` (seconds).
+    area after this downloads it (default False).
+
+    For large sets this can take a while; raise ``timeout`` (seconds), or set
+    ``wait=False`` to return immediately once the export is kicked off instead of blocking
+    for the whole thing. That returns a download URL rather than a file; check progress
+    with ``get_export_progress`` and, once it reports complete, retrieve the file with
+    ``fetch_export_file`` (that URL, plus ``output_path``). ``wait=False`` always goes
+    through the selection-aware endpoint, even with no filters set, since that is the only
+    one with a separate progress channel to poll.
     """
     client = get_client()
     dest = Path(output_path)
@@ -237,8 +245,30 @@ def export_genotypes(
         region, selected_variant_types, min_maf is not None, max_maf is not None,
         max_missing_data is not None, individuals, metadata_fields, keep_on_server,
     ])
+    chrom, start, end = parse_region(region) if region else (None, None, None)
+
+    if not wait:
+        export_url = client.start_export(
+            variant_set_db_id,
+            fmt=format,
+            reference_name=chrom,
+            start=start,
+            end=end,
+            selected_variant_types=selected_variant_types,
+            min_maf=min_maf,
+            max_maf=max_maf,
+            max_missing_data=max_missing_data,
+            exported_individuals=individuals,
+            metadata_fields=metadata_fields,
+            keep_on_server=keep_on_server,
+        )
+        return (
+            f"Export started for {variant_set_db_id} as {format} (not waiting).\n"
+            f"Check status with get_export_progress().\n"
+            f'Once complete: fetch_export_file(download_url="{export_url}", output_path="{output_path}").'
+        )
+
     if filtered:
-        chrom, start, end = parse_region(region) if region else (None, None, None)
         written = client.export_selection(
             variant_set_db_id,
             dest,
@@ -265,3 +295,37 @@ def export_genotypes(
         if filtered else ""
     )
     return f"Exported {variant_set_db_id} as {format} -> {written} ({size:,} bytes).{detail}"
+
+
+@mcp.tool()
+def get_export_progress() -> str:
+    """Report the status of the current session's most recent export (started with
+    ``export_genotypes(..., wait=False)``).
+
+    Unlike imports, an export isn't tracked by a token you pass around — Gigwa ties it to
+    the session's own auth token, so there is exactly one "current export" per connection
+    and this takes no arguments.
+    """
+    client = get_client()
+    status = client.export_progress()
+    if status is None:
+        return "No export progress reported (none started this session, or it already finished)."
+    if status.error:
+        return f"Export failed: {status.error}"
+    if status.aborted:
+        return "Export was aborted on the server."
+    if status.complete:
+        return "Export complete — retrieve it with fetch_export_file."
+    return f"Export in progress: {status.summary()}"
+
+
+@mcp.tool()
+def fetch_export_file(download_url: str, output_path: str) -> str:
+    """Download a completed export — the URL ``export_genotypes(..., wait=False)`` returned
+    — once ``get_export_progress`` reports it complete."""
+    client = get_client()
+    dest = Path(output_path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    written = client.download_export(download_url, dest)
+    size = written.stat().st_size if written.is_file() else 0
+    return f"Downloaded export -> {written} ({size:,} bytes)."

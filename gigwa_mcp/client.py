@@ -450,8 +450,9 @@ class GigwaClient:
         )
 
     # -- export progress (distinct process-id scheme from imports) ---------
-    def _export_progress(self) -> ProgressStatus | None:
-        """Poll the progress of *this session's* export, started via :meth:`export_selection`.
+    def export_progress(self) -> ProgressStatus | None:
+        """Poll the progress of *this session's* most recent export (started via
+        :meth:`start_export`/:meth:`export_selection`).
 
         Gigwa tracks an export under the process id ``"export_" + <session token>``
         (``GigwaGa4ghServiceImpl.exportVariants``: ``processId = "export_" + token``), and
@@ -460,7 +461,8 @@ class GigwaClient:
         ``progressToken`` query parameter is given (``GigwaRestController.getProcessProgress``).
         So — unlike an import, which is polled by the token *returned from* the import call —
         an export is polled by re-authenticating with an ``"export_"``-prefixed pseudo-token
-        instead of a query parameter. Verified against the Gigwa server source (not just a
+        instead of a query parameter, and takes no id: there is exactly one "current export"
+        per authenticated session. Verified against the Gigwa server source (not just a
         browser capture): confirms the mechanism is exactly this, not a coincidence of one
         build's URL.
         """
@@ -482,7 +484,7 @@ class GigwaClient:
 
     def _wait_for_export(self, *, poll_interval: float, timeout: float) -> ProgressStatus:
         return self._poll_until_complete(
-            self._export_progress,
+            self.export_progress,
             poll_interval=poll_interval,
             timeout=timeout,
             what="Export",
@@ -842,10 +844,9 @@ class GigwaClient:
             return {}
         return data if isinstance(data, dict) else {}
 
-    def export_selection(
+    def start_export(
         self,
         variant_set_db_id: str,
-        dest_path: str | Path,
         *,
         fmt: str = "VCF",
         reference_name: str | None = None,
@@ -859,13 +860,12 @@ class GigwaClient:
         exported_individuals: Sequence[str] | None = None,
         metadata_fields: Sequence[str] | None = None,
         keep_on_server: bool = False,
-        poll_interval: float = 2.0,
-        timeout: float = 1800.0,
-    ) -> Path:
-        """Export a filtered/selected subset of a variant set, via the endpoint the Gigwa
-        web UI itself uses for a filtered/selection-based download (as opposed to
-        :meth:`export_data`, which exports a whole set with no filtering, through Gigwa's
-        plain BrAPI per-format export).
+    ) -> str:
+        """Kick off a filtered/selected export and return its eventual download URL
+        immediately, *without* waiting for the export to finish — the non-blocking half of
+        :meth:`export_selection` (which POSTs this, waits via :meth:`export_progress`, then
+        downloads). Pair with :meth:`export_progress` to poll status and
+        :meth:`download_export` to retrieve the file once complete.
 
         Accepts the same region/MAF/missing-data filters as :meth:`count_variants`, plus
         ``selected_variant_types`` (``;``-joined, e.g. ``"SNP;INDEL"`` — see
@@ -876,13 +876,11 @@ class GigwaClient:
         export-handler registry — including ``"VCF.gz"`` (bgzipped VCF), which is its own
         registered format, not a flag on plain ``"VCF"``.
 
-        The endpoint's async shape is unusual: ``POST /gigwa/exportData`` returns
-        immediately with the eventual download URL as a plain-text body — the export
-        itself runs server-side in a background thread and streams to that path — so this
-        polls completion via :meth:`_wait_for_export` (a distinct process-id scheme from
-        :meth:`export_data`'s simple 202/200 polling) before downloading. ``keep_on_server``
-        mirrors Gigwa's own "keep in my temp-output area" toggle; default False, since an
-        MCP export is normally a one-shot download.
+        ``POST /gigwa/exportData`` itself returns immediately with this URL as a
+        plain-text body — the export runs server-side in a background thread and streams
+        to that path — which is what makes the non-blocking split possible.
+        ``keep_on_server`` mirrors Gigwa's own "keep in my temp-output area" toggle;
+        default False, since an MCP export is normally a one-shot download.
         """
         body = self._variant_search_body(
             variant_set_db_id,
@@ -909,10 +907,11 @@ class GigwaClient:
         export_url = resp.text.strip()
         if not export_url:
             raise GigwaAPIError("exportData did not return a download URL.")
+        return export_url
 
-        notify(f"Exporting {fmt} from Gigwa…")
-        self._wait_for_export(poll_interval=poll_interval, timeout=timeout)
-
+    def download_export(self, export_url: str, dest_path: str | Path) -> Path:
+        """Fetch a completed export from the URL :meth:`start_export` returned, once
+        :meth:`export_progress` reports it complete."""
         split = urllib.parse.urlsplit(self.config.base_url)
         origin = f"{split.scheme}://{split.netloc}"
         download_url = export_url if export_url.startswith("http") else f"{origin}{export_url}"
@@ -922,6 +921,50 @@ class GigwaClient:
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         dest_path.write_bytes(dl.content)
         return dest_path
+
+    def export_selection(
+        self,
+        variant_set_db_id: str,
+        dest_path: str | Path,
+        *,
+        fmt: str = "VCF",
+        reference_name: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        selected_variant_types: str | None = None,
+        min_maf: float | None = None,
+        max_maf: float | None = None,
+        max_missing_data: float | None = None,
+        callset_ids: Sequence[str] | None = None,
+        exported_individuals: Sequence[str] | None = None,
+        metadata_fields: Sequence[str] | None = None,
+        keep_on_server: bool = False,
+        poll_interval: float = 2.0,
+        timeout: float = 1800.0,
+    ) -> Path:
+        """Export a filtered/selected subset of a variant set and block until it's
+        downloaded — :meth:`start_export`, :meth:`_wait_for_export`, :meth:`download_export`
+        in one call. See :meth:`start_export` for the filter parameters; use that plus
+        :meth:`export_progress`/:meth:`download_export` directly for a non-blocking export.
+        """
+        export_url = self.start_export(
+            variant_set_db_id,
+            fmt=fmt,
+            reference_name=reference_name,
+            start=start,
+            end=end,
+            selected_variant_types=selected_variant_types,
+            min_maf=min_maf,
+            max_maf=max_maf,
+            max_missing_data=max_missing_data,
+            callset_ids=callset_ids,
+            exported_individuals=exported_individuals,
+            metadata_fields=metadata_fields,
+            keep_on_server=keep_on_server,
+        )
+        notify(f"Exporting {fmt} from Gigwa…")
+        self._wait_for_export(poll_interval=poll_interval, timeout=timeout)
+        return self.download_export(export_url, dest_path)
 
     def _available_formats(self, variant_set_db_id: str) -> list[str]:
         """Best-effort list of export formats a variant set advertises (``availableFormats``)."""
