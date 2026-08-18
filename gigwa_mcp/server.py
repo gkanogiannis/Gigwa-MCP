@@ -305,8 +305,11 @@ TOOL_CATALOG: dict[str, ToolInfo] = {
         "Variant search", "Search variants server-side and write the matching list to CSV.",
         _SEARCH, _T_GENVAR),
     # -- Export --
+    "list_export_formats": ToolInfo(
+        "Export", "List export formats this instance supports, with type/ploidy compatibility.",
+        _RETRIEVE, _T_GENVAR),
     "export_genotypes": ToolInfo(
-        "Export", "Export a variant set to a file (VCF/PLINK/Flapjack; varies by build).",
+        "Export", "Export a variant set, or a filtered/selected subset, to a file.",
         _FORMAT, _T_GENVAR),
     # -- Quality control --
     "qc_call_rate": ToolInfo(
@@ -422,8 +425,12 @@ _PARAM_DESCRIPTIONS: dict[str, str] = {
     "max_maf": "Maximum minor-allele frequency (0-1).",
     "max_missing_data": "Maximum per-variant missing-data fraction (0-1).",
     "max_variants": "Maximum number of matching variants to retrieve.",
-    "format": "Export format: VCF, PLINK or Flapjack (availability varies by Gigwa build).",
+    "format": "Export format name, e.g. VCF (default), PLINK, FLAPJACK or VCF.gz; see list_export_formats for what this instance offers (and each format's type/ploidy restrictions).",
     "timeout": "Maximum seconds to wait for the export to complete.",
+    "selected_variant_types": "Restrict the export to these variant types, ';'-joined (e.g. 'SNP' or 'SNP;INDEL'); omit for all types.",
+    "individuals": "Accession/individual names to include in the export; omit for all individuals in the set.",
+    "metadata_fields": "Individual metadata columns to embed in the export (from get_germplasm_metadata); omit for none.",
+    "keep_on_server": "Also leave a copy of the export in the user's Gigwa temp-output area after downloading it here.",
     "min_sample_call_rate": "Flag samples with call rate below this (0-1).",
     "min_marker_call_rate": "Flag markers with call rate below this (0-1).",
     "outlier_sd": "Flag points more than this many standard deviations from the mean.",

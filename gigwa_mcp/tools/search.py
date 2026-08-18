@@ -7,12 +7,16 @@ without pulling a whole variant set through the analysis layer.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pandas as pd
 
+from ..analysis.genotypes import parse_region
 from ..analysis.results import resolve_output_dir, write_csv
 from ..server import get_client, mcp, progress_tool
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
 def _variant_row(v: dict) -> dict:
@@ -164,27 +168,100 @@ def list_variant_sets() -> str:
     return f"{len(sets)} variant set(s):\n" + "\n".join(lines)
 
 
+@mcp.tool()
+def list_export_formats() -> str:
+    """List the export formats this Gigwa build supports, with per-format compatibility info.
+
+    Queried live from the server's export-handler registry rather than a hardcoded list, so
+    it reflects exactly what this build/instance offers. For each format shows the variant
+    types it accepts and the ploidy levels it supports — check this before picking a
+    ``format`` for ``export_genotypes``: several formats (e.g. EIGENSTRAT, FASTA, NEXUS,
+    PHYLIP, PCA, ASD, JUKES-CANTOR) are SNP-only and/or diploid-only, silently dropping
+    INDEL/MIXED sites or rejecting other-ploidy runs rather than erroring.
+    """
+    client = get_client()
+    formats = client.get_export_formats()
+    if not formats:
+        return "No export formats reported by this Gigwa instance."
+    lines = []
+    for name, info in sorted(formats.items()):
+        types = info.get("supportedVariantTypes") or "any"
+        ploidy = info.get("supportedPloidyLevels") or "any"
+        ext = info.get("dataFileExtensions") or ""
+        desc = _HTML_TAG_RE.sub("", info.get("desc") or "").strip()
+        if len(desc) > 160:
+            desc = desc[:157].rstrip() + "..."
+        lines.append(
+            f"  {name}: variant types={types}, ploidy={ploidy}"
+            + (f", extension(s)={ext}" if ext else "")
+            + (f" — {desc}" if desc else "")
+        )
+    return f"{len(formats)} export format(s) on this instance:\n" + "\n".join(lines)
+
+
 @progress_tool()
 def export_genotypes(
     variant_set_db_id: str,
     output_path: str,
     format: str = "VCF",
+    region: str | None = None,
+    selected_variant_types: str | None = None,
+    min_maf: float | None = None,
+    max_maf: float | None = None,
+    max_missing_data: float | None = None,
+    individuals: list[str] | None = None,
+    metadata_fields: list[str] | None = None,
+    keep_on_server: bool = False,
     timeout: float = 1800.0,
 ) -> str:
-    """Export a variant set to a file in the given format.
+    """Export a variant set — or a filtered/selected subset of it — to a file.
 
-    ``format`` is one of Gigwa's export formats. Which are available depends on the Gigwa
-    build — ``VCF`` (default), ``PLINK`` and ``FLAPJACK`` are commonly supported; others
-    (``HAPMAP``, ``DARWIN``, …) may not be, in which case the tool reports the formats this
-    instance actually offers. The export runs server-side and is streamed to
-    ``output_path``. For large sets this can take a while; raise ``timeout`` (seconds).
+    With none of the filter/selection parameters set, exports the whole set via Gigwa's
+    plain per-format export (``format`` one of ``VCF`` (default), ``PLINK`` or
+    ``FLAPJACK``; availability varies by build — check ``list_export_formats`` for what
+    this instance actually offers, and each format's variant-type/ploidy restrictions).
+
+    Passing any of ``region``, ``selected_variant_types``, ``min_maf``/``max_maf``,
+    ``max_missing_data``, ``individuals`` or ``metadata_fields`` instead drives Gigwa's
+    selection-aware export — the same endpoint the Gigwa web UI uses for a filtered
+    download — which additionally accepts any format the server advertises, including the
+    bgzipped ``"VCF.gz"``. ``keep_on_server`` leaves a copy in the user's Gigwa temp-output
+    area after this downloads it (default False). For large sets this can take a while;
+    raise ``timeout`` (seconds).
     """
     client = get_client()
     dest = Path(output_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    written = client.export_data(variant_set_db_id, dest, fmt=format, timeout=timeout)
+
+    filtered = any([
+        region, selected_variant_types, min_maf is not None, max_maf is not None,
+        max_missing_data is not None, individuals, metadata_fields, keep_on_server,
+    ])
+    if filtered:
+        chrom, start, end = parse_region(region) if region else (None, None, None)
+        written = client.export_selection(
+            variant_set_db_id,
+            dest,
+            fmt=format,
+            reference_name=chrom,
+            start=start,
+            end=end,
+            selected_variant_types=selected_variant_types,
+            min_maf=min_maf,
+            max_maf=max_maf,
+            max_missing_data=max_missing_data,
+            exported_individuals=individuals,
+            metadata_fields=metadata_fields,
+            keep_on_server=keep_on_server,
+            timeout=timeout,
+        )
+    else:
+        written = client.export_data(variant_set_db_id, dest, fmt=format, timeout=timeout)
+
     size = written.stat().st_size if written.is_file() else 0
-    return (
-        f"Exported {variant_set_db_id} as {format.upper()} -> {written} "
-        f"({size:,} bytes)."
+    detail = (
+        f"\nFilters: region={region or 'all'}, types={selected_variant_types or 'all'}, "
+        f"individuals={len(individuals) if individuals else 'all'}"
+        if filtered else ""
     )
+    return f"Exported {variant_set_db_id} as {format} -> {written} ({size:,} bytes).{detail}"

@@ -120,6 +120,90 @@ def test_export_data_nonvcf_streams_after_202(tmp_path):
     assert written.read_bytes() == b"X" * 128
 
 
+def test_get_export_formats_parses_registry():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/gigwa/exportFormats")
+        return httpx.Response(200, json={
+            "VCF": {"desc": "Variant Call Format", "supportedPloidyLevels": "",
+                     "supportedVariantTypes": "", "dataFileExtensions": "vcf"},
+            "EIGENSTRAT": {"desc": "SNP-only <a href='x'>alignment</a> format",
+                            "supportedPloidyLevels": "2", "supportedVariantTypes": "SNP",
+                            "dataFileExtensions": "geno;snp;ind"},
+        })
+
+    client = make_client(_token_or(handler))
+    formats = client.get_export_formats()
+    assert set(formats) == {"VCF", "EIGENSTRAT"}
+    assert formats["EIGENSTRAT"]["supportedPloidyLevels"] == "2"
+    assert formats["EIGENSTRAT"]["supportedVariantTypes"] == "SNP"
+
+
+def test_export_selection_posts_filters_polls_and_downloads(tmp_path):
+    calls = {"progress": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/gigwa/exportData"):
+            import json
+
+            body = json.loads(request.read().decode())
+            assert body["variantSetId"] == "MOD§1"
+            assert body["referenceName"] == "chr1"
+            assert body["start"] == 100 and body["end"] == 200
+            assert body["selectedVariantTypes"] == "SNP"
+            assert body["exportFormat"] == "VCF.gz"
+            assert body["keepExportOnServer"] is False
+            assert body["exportedIndividuals"] == ["acc1", "acc2"]
+            assert body["metadataFields"] == ["Country"]
+            assert body["minMaf"] == [5.0]  # 0.05 fraction -> percentage
+            return httpx.Response(200, text="/gigwaV2/tmpOutput/u/abc/out.vcf.gz")
+        if path.endswith("/gigwa/progress"):
+            assert "progressToken" not in request.url.params
+            assert request.headers["authorization"] == "Bearer export_t"
+            calls["progress"] += 1
+            if calls["progress"] < 2:
+                return httpx.Response(200, json={"complete": False, "progressDescription": "working"})
+            return httpx.Response(200, json={"complete": True})
+        if path.endswith("/tmpOutput/u/abc/out.vcf.gz"):
+            assert request.headers["authorization"] == "Bearer t"
+            return httpx.Response(200, content=b"VCFGZDATA")
+        raise AssertionError(f"unexpected path: {path}")
+
+    client = make_client(_token_or(handler))
+    dest = tmp_path / "out.vcf.gz"
+    written = client.export_selection(
+        "MOD§1§run1", dest,
+        fmt="VCF.gz",
+        reference_name="chr1", start=100, end=200,
+        selected_variant_types="SNP",
+        min_maf=0.05,
+        exported_individuals=["acc1", "acc2"],
+        metadata_fields=["Country"],
+        poll_interval=0,
+    )
+    assert written == dest
+    assert dest.read_bytes() == b"VCFGZDATA"
+    assert calls["progress"] == 2
+
+
+def test_export_selection_raises_on_server_error_status():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/gigwa/exportData"):
+            return httpx.Response(200, text="/gigwaV2/tmpOutput/u/abc/out.vcf")
+        if request.url.path.endswith("/gigwa/progress"):
+            return httpx.Response(200, json={"complete": False, "error": "boom"})
+        raise AssertionError("download should not be reached")
+
+    from gigwa_mcp.errors import GigwaExportError
+
+    client = make_client(_token_or(handler))
+    try:
+        client.export_selection("MOD§1§run1", "/tmp/whatever.vcf", poll_interval=0)
+        raise AssertionError("expected GigwaExportError")
+    except GigwaExportError as exc:
+        assert "boom" in str(exc)
+
+
 def test_abort_calls_abort_process():
     seen = {}
 
