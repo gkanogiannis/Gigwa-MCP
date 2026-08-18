@@ -11,7 +11,7 @@ from ..analysis.genotypes import module_of
 from ..analysis.results import resolve_output_dir, write_csv
 from ..client import ProgressStatus
 from ..errors import GigwaAPIError
-from ..server import get_client, mcp
+from ..server import get_client, mcp, progress_tool
 
 
 def _render_validation(result: object) -> str:
@@ -50,7 +50,7 @@ def validate_metadata(
     return _render_validation(result)
 
 
-@mcp.tool()
+@progress_tool()
 def import_metadata(
     tsv_path: str,
     module: str,
