@@ -297,6 +297,12 @@ TOOL_CATALOG: dict[str, ToolInfo] = {
     "get_germplasm_metadata": ToolInfo(
         "Metadata", "Fetch server-stored per-individual (germplasm) attributes.",
         _RETRIEVE, _T_GENOPHENO),
+    "list_metadata_values": ToolInfo(
+        "Metadata", "List individual-metadata field names and their distinct values.",
+        _RETRIEVE, _T_GENOPHENO),
+    "filter_individuals_by_metadata": ToolInfo(
+        "Metadata", "Select individuals matching metadata field/value filters.",
+        _SEARCH, _T_GENOPHENO),
     # -- Variant search --
     "count_variants": ToolInfo(
         "Variant search", "Count variants matching region/MAF/missing filters, server-side.",
@@ -431,6 +437,7 @@ _PARAM_DESCRIPTIONS: dict[str, str] = {
     "individuals": "Accession/individual names to include in the export; omit for all individuals in the set.",
     "metadata_fields": "Individual metadata columns to embed in the export (from get_germplasm_metadata); omit for none.",
     "keep_on_server": "Also leave a copy of the export in the user's Gigwa temp-output area after downloading it here.",
+    "filters_json": "JSON object mapping each metadata field name to a list of acceptable values, e.g. {\"GroupK4\": [\"cA\"]} (see list_metadata_values for field/value names). Multiple fields AND together; multiple values for one field OR together.",
     "min_sample_call_rate": "Flag samples with call rate below this (0-1).",
     "min_marker_call_rate": "Flag markers with call rate below this (0-1).",
     "outlier_sd": "Flag points more than this many standard deviations from the mean.",

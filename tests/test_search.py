@@ -222,6 +222,8 @@ def test_abort_calls_abort_process():
 
 def test_get_germplasm_falls_back_to_get_listing():
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/gigwa/filterIndividualsFromMetadata/MOD"):
+            return httpx.Response(200, json=[])  # native endpoint unavailable/empty
         if request.method == "POST" and request.url.path.endswith("/search/germplasm"):
             return httpx.Response(404, text="not supported")
         if request.method == "GET" and request.url.path.endswith("/brapi/v2/germplasm"):
@@ -233,3 +235,47 @@ def test_get_germplasm_falls_back_to_get_listing():
     client = make_client(_token_or(handler))
     recs = client.get_germplasm("MOD§1§run1")
     assert recs and recs[0]["germplasmName"] == "acc1"
+
+
+def test_get_germplasm_prefers_native_metadata_endpoint():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/gigwa/filterIndividualsFromMetadata/MOD"):
+            import json
+
+            assert json.loads(request.read().decode()) == {}
+            return httpx.Response(200, json=[{"id": "7", "additionalInfo": {"GroupK4": "cA"}}])
+        raise AssertionError(f"BrAPI fallback should not be reached: {request.url.path}")
+
+    client = make_client(_token_or(handler))
+    recs = client.get_germplasm("MOD§1§run1")
+    assert recs == [{"germplasmName": "7", "germplasmDbId": "MOD§7", "additionalInfo": {"GroupK4": "cA"}}]
+
+
+def test_distinct_individual_metadata_parses_fields():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/gigwa/distinctIndividualMetadata/MOD")
+        return httpx.Response(200, json={"GroupK4": ["cA", "XI", "GJ"], "Country": ["PE", "China"]})
+
+    client = make_client(_token_or(handler))
+    fields = client.distinct_individual_metadata("MOD")
+    assert fields["GroupK4"] == ["cA", "XI", "GJ"]
+    assert fields["Country"] == ["PE", "China"]
+
+
+def test_filter_individuals_by_metadata_sends_filters():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        assert request.url.path.endswith("/gigwa/filterIndividualsFromMetadata/MOD")
+        captured["body"] = json.loads(request.read().decode())
+        return httpx.Response(200, json=[
+            {"id": "21", "additionalInfo": {"GroupK4": "cA"}},
+            {"id": "34", "additionalInfo": {"GroupK4": "cA"}},
+        ])
+
+    client = make_client(_token_or(handler))
+    recs = client.filter_individuals_by_metadata("MOD", {"GroupK4": ["cA"]})
+    assert [r["id"] for r in recs] == ["21", "34"]
+    assert captured["body"] == {"GroupK4": ["cA"]}

@@ -16,6 +16,10 @@ Verified against Gigwa 2.12-RELEASE:
   immediately, while the export runs server-side; its progress is polled via
   ``GET /gigwa/progress`` with **no** ``progressToken`` param and an ``Authorization:
   Bearer export_<token>`` header instead (see ``GigwaClient._export_progress``).
+- ``POST /gigwa/distinctIndividualMetadata/{module}`` and
+  ``POST /gigwa/filterIndividualsFromMetadata/{module}`` (the endpoints behind the Gigwa
+  web UI's "select individuals by attribute" filters) expose per-individual metadata
+  Gigwa's BrAPI ``search/germplasm`` does not reliably populate on every build.
 """
 
 from __future__ import annotations
@@ -954,15 +958,85 @@ class GigwaClient:
         return data if isinstance(data, dict) else {}
 
     # -- germplasm metadata (BrAPI) ---------------------------------------
-    def get_germplasm(self, variant_set_db_id: str) -> list[dict[str, Any]]:
-        """Fetch server-stored germplasm records (per-individual attributes) for a module.
+    def distinct_individual_metadata(
+        self, module: str, *, individuals: Sequence[str] | None = None
+    ) -> dict[str, list[str]]:
+        """Discover per-individual metadata field names and their distinct values.
 
-        Uses BrAPI ``POST /brapi/v2/search/germplasm`` filtered by program/study derived
-        from the module, falling back to the ``GET /brapi/v2/germplasm`` listing. Returns
-        an empty list when the build does not support it (some 2.12 builds 404 attribute
-        endpoints), mirroring the :meth:`list_variantsets` graceful-fallback pattern.
+        ``POST /gigwa/distinctIndividualMetadata/{module}`` -- the endpoint the Gigwa web
+        UI itself uses to populate its "select individuals by attribute" filters. Distinct
+        from (and, on builds where that path returns no ``additionalInfo``, more complete
+        than) the BrAPI germplasm search :meth:`get_germplasm` also tries. ``individuals``
+        optionally restricts value discovery to that subset (default: the whole module).
+        """
+        resp = self._check(
+            self.request(
+                "POST",
+                f"/gigwa/distinctIndividualMetadata/{module}",
+                json_body={"individuals": list(individuals)} if individuals else {},
+            ),
+            "distinctIndividualMetadata",
+        )
+        try:
+            data = resp.json()
+        except ValueError:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {str(k): [str(v) for v in (vs or [])] for k, vs in data.items()}
+
+    def filter_individuals_by_metadata(
+        self, module: str, filters: dict[str, Sequence[str]]
+    ) -> list[dict[str, Any]]:
+        """Return individuals whose metadata matches *filters* (field name -> allowed
+        values; multiple fields AND together, multiple values for one field OR together).
+
+        ``POST /gigwa/filterIndividualsFromMetadata/{module}`` -- the same endpoint behind
+        the Gigwa web UI's "create group from metadata" dialog. Each result is
+        ``{"id": <individual name>, "additionalInfo": {field: value, ...}}``. An empty
+        ``filters`` dict returns every individual with its full metadata (used by
+        :meth:`get_germplasm` as its primary source).
+        """
+        resp = self._check(
+            self.request(
+                "POST",
+                f"/gigwa/filterIndividualsFromMetadata/{module}",
+                json_body={k: list(v) for k, v in filters.items()},
+            ),
+            "filterIndividualsFromMetadata",
+        )
+        try:
+            data = resp.json()
+        except ValueError:
+            return []
+        return data if isinstance(data, list) else []
+
+    def get_germplasm(self, variant_set_db_id: str) -> list[dict[str, Any]]:
+        """Fetch server-stored per-individual metadata for a module, as BrAPI-germplasm-
+        shaped records (``germplasmName``/``germplasmDbId``/``additionalInfo``).
+
+        Tries :meth:`filter_individuals_by_metadata` (Gigwa's native, always-populated
+        metadata endpoint) first, since BrAPI ``search/germplasm`` on some builds returns
+        every individual but with **no** ``additionalInfo`` at all (verified live: the
+        endpoint responds 200 with real records, just none of the custom fields). Falls
+        back to BrAPI ``POST /brapi/v2/search/germplasm`` then ``GET /brapi/v2/germplasm``
+        for builds without the native endpoint. Returns an empty list when nothing works.
         """
         module = variant_set_db_id.split("§", 1)[0]
+        try:
+            native = self.filter_individuals_by_metadata(module, {})
+        except (GigwaAPIError, httpx.HTTPError):
+            native = []
+        if native:
+            return [
+                {
+                    "germplasmName": rec.get("id"),
+                    "germplasmDbId": f"{module}§{rec.get('id')}",
+                    "additionalInfo": rec.get("additionalInfo") or {},
+                }
+                for rec in native
+            ]
+
         for method, path, body in (
             ("POST", "/brapi/v2/search/germplasm", {"programDbIds": [module]}),
             ("GET", "/brapi/v2/germplasm", None),
