@@ -108,9 +108,14 @@ never modify the data in Gigwa.
 | `list_sequences` | List the chromosomes/contigs of a variant set (valid `reference_name` values) |
 | `count_variants` | Count variants matching region / MAF / missing-data filters, server-side (no download) |
 | `search_variants` | Search variants server-side and write the matching list (`variant_search.csv`) |
-| `export_genotypes` | Export a variant set to a file — `VCF`/`PLINK`/`Flapjack` (formats vary by build) |
+| `list_export_formats` | List the export formats this build actually offers, with variant-type/ploidy limits |
+| `export_genotypes` | Export a variant set — or a filtered/selected subset — to a file; `wait=False` for long runs |
+| `get_export_progress` | Status of this session's running export (started with `wait=False`) |
+| `fetch_export_file` | Download a completed export once `get_export_progress` reports it done |
 | `search_callsets` | Dump per-sample (callset) metadata — names + `additionalInfo` attributes (`sample_metadata.csv`) |
-| `get_germplasm_metadata` | Pull server-stored per-individual attributes (`germplasm_metadata.csv`); falls back to the callset level |
+| `get_germplasm_metadata` | Pull server-stored per-individual attributes (`germplasm_metadata.csv`) |
+| `list_metadata_values` | List individual-metadata field names and their distinct values |
+| `filter_individuals_by_metadata` | Select individuals by metadata field/value filters (feeds `export_genotypes`) |
 
 **QC & diversity (read-only)**
 
@@ -487,9 +492,14 @@ args `max_markers` / `method` (`"vcf"` | `"allelematrix"`), and `region`
 | `list_sequences` | `variant_set_db_id` | chromosomes/contigs (valid `reference_name`s) |
 | `count_variants` | `reference_name?`, `start?`, `end?`, `min_maf?`, `max_maf?`, `max_missing_data?` | server-side match count (no download) |
 | `search_variants` | same filters as `count_variants`, `max_variants=100000` | `variant_search.csv` (id/chrom/pos/ref/alt) |
-| `export_genotypes` | `output_path`, `format="VCF"` (`PLINK`/`Flapjack`; varies by build) | writes the export file |
+| `list_export_formats` | (none) | the instance's export handlers + type/ploidy limits |
+| `export_genotypes` | `output_path`, `format="VCF"`, plus `region?`, `min_maf?`, `individuals?`, `metadata_fields?`, `wait=True` | writes the export file (or a download URL when `wait=False`) |
+| `get_export_progress` | (none) | status of this session's export |
+| `fetch_export_file` | `download_url`, `output_path` | writes the completed export |
 | `search_callsets` | `variant_set_db_id` | `sample_metadata.csv` (per-sample attributes) |
-| `get_germplasm_metadata` | `variant_set_db_id` | `germplasm_metadata.csv` (server-stored attributes; callset fallback) |
+| `get_germplasm_metadata` | `variant_set_db_id` | `germplasm_metadata.csv` (join on `sample_name`) |
+| `list_metadata_values` | `variant_set_db_id` | metadata fields + distinct values |
+| `filter_individuals_by_metadata` | `variant_set_db_id`, `filters_json` | matching individual identifiers |
 
 **QC & diversity** (output files listed in [Output files](#output-files))
 
@@ -605,7 +615,7 @@ Each analysis writes one or more CSVs (Newick for the tree) under
 | `tree.nwk` | `diversity_tree` | UPGMA tree (Newick) |
 | `import_quality_scan.csv` | `audit_import_quality` | one row per run: status + diagnostics + reasons |
 | `variant_search.csv` | `search_variants` | matching variants (id, chrom, pos, ref, alt) |
-| `germplasm_metadata.csv` | `get_germplasm_metadata` | server-stored per-individual attributes |
+| `germplasm_metadata.csv` | `get_germplasm_metadata` | server-stored per-individual attributes; join on `sample_name` |
 | `sample_metadata.csv` | `search_callsets` | per-sample (callset) attributes |
 | `dartseq_positions.csv` | `map_dartseq_to_reference` | per-marker chrom/pos/strand/mapq/status |
 
@@ -807,6 +817,41 @@ statistics against hand-computed values; `test_genotypes.py` exercises VCF parsi
 callset-name mapping with a mock client. The suite needs no live Gigwa server.
 
 ## Changelog
+
+### v1.9.0 — MCP SDK v2, selection-aware export & metadata endpoints
+
+- **Migrated to the MCP Python SDK v2** (`mcp>=2.1,<3`). v1.x is upstream *maintenance mode,
+  security fixes only*, and v2 carries a newer protocol revision. `FastMCP` becomes
+  `MCPServer`; the transport configuration (`json_response`, `streamable_http_path`,
+  `transport_security`) moved from mutable settings to `streamable_http_app()` parameters;
+  and the server version is now a constructor argument, retiring the private
+  `_mcp_server.version` write. Tools, prompts and resources are unchanged — the registration
+  decorators are identical in v2. Verified with a scripted `initialize`/`tools/list`
+  handshake over both stdio and HTTP.
+- **Selection-aware export** (contributed by @GuilhemSempere, PR #2). `export_genotypes`
+  gains region / variant-type / MAF / missing-data filters, `individuals` and
+  `metadata_fields` selection, and `keep_on_server`; `wait=False` returns immediately with a
+  download URL, pollable via the new `get_export_progress` and retrievable with
+  `fetch_export_file`. `list_export_formats` reports what the instance's export-handler
+  registry actually offers, including each format's variant-type/ploidy restrictions.
+- **Native individual-metadata endpoints** (same PR). `list_metadata_values` and
+  `filter_individuals_by_metadata` use the endpoints behind the Gigwa web UI's own
+  attribute filters, and `get_germplasm` now tries them before BrAPI — so per-individual
+  attributes are found on builds where BrAPI `search/germplasm` returns records with no
+  `additionalInfo` at all.
+- **`germplasm_metadata.csv` gained a `sample_name` column — join on it.** Gigwa's
+  individual id (`germplasm_name`) is *not* the name the analysis tools give a sample: on a
+  13,678-sample ICARDA database none of them agree, yet 10,090 collide numerically with a
+  *different* individual, so joining on `germplasm_name` silently mis-grouped the majority of
+  samples. `sample_name` bridges the two id spaces and resolves 13,678/13,678 there.
+- **Removed the callset fallback from `get_germplasm_metadata`.** With the native endpoint
+  tried first it no longer fires; when the germplasm level really is empty the tool now says
+  so and points at `search_callsets` for sample-level attributes.
+- **Hardened export downloads.** `fetch_export_file` takes a caller-supplied URL and the
+  request carries the session's bearer token, so an absolute URL must now match the
+  configured Gigwa origin; anything else is rejected before a request is made.
+- **Declared `starlette` and `uvicorn`** explicitly — the HTTP transport imports both
+  directly rather than relying on them arriving through `mcp`.
 
 ### v1.8.0 — callset-level metadata & richer connection info
 

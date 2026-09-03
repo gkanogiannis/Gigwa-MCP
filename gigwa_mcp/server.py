@@ -20,7 +20,7 @@ from typing import Any, Callable
 
 import anyio
 from starlette.types import ASGIApp, Receive, Scope, Send
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 
 from .client import GigwaClient
 from .config import GigwaConfig
@@ -31,14 +31,22 @@ try:
 except PackageNotFoundError:  # running from a source tree without an install
     __version__ = "0.0.0"
 
-mcp = FastMCP("gigwa")
-# Ensure the StreamableHTTP transport mounts at /mcp by default.
-# This matches the MCP client expectation and the protocol's common transport path.
-mcp.settings.streamable_http_path = "/mcp"
-# Prefer JSON responses for StreamableHTTP POST requests. Many MCP clients (including
-# the Drupal mcp_client integration) only advertise application/json and otherwise
-# hit the SDK's 406 Not Acceptable path when the server expects SSE negotiation.
-mcp.settings.json_response = True
+# ``version`` reaches the MCP serverInfo, so clients and registries report gigwa-mcp's
+# version rather than the mcp SDK's. The StreamableHTTP transport mounts at /mcp, which is
+# the SDK's own default in v2 and what MCP clients expect.
+mcp = MCPServer("gigwa", version=__version__)
+
+# Prefer JSON responses for StreamableHTTP POST requests. Many MCP clients (including the
+# Drupal mcp_client integration) only advertise application/json and otherwise hit the SDK's
+# 406 Not Acceptable path when the server expects SSE negotiation. In the v2 SDK this is a
+# parameter of the app factory rather than a setting, so it is applied in
+# :func:`_streamable_http_app` below (and mirrored by tests that build the app directly).
+STREAMABLE_HTTP_JSON_RESPONSE = True
+
+# Where the StreamableHTTP transport mounts. This is also the v2 SDK's own default; it is
+# named here because the malformed-notification normaliser below has to recognise the path,
+# and because tests build the app directly.
+STREAMABLE_HTTP_PATH = "/mcp"
 # Normalize malformed notification requests from clients that send
 # notifications/initialized with an id field. This is tolerated here to
 # remain compatible with buggy MCP clients while preserving normal behavior.
@@ -89,7 +97,7 @@ def _replay_receive(prefix: bytes, more_body: bool, receive: Receive) -> Receive
 
 def _normalize_streamable_http_app(app: ASGIApp) -> ASGIApp:
     async def wrapper(scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and scope["method"] == "POST" and scope["path"] == mcp.settings.streamable_http_path:
+        if scope["type"] == "http" and scope["method"] == "POST" and scope["path"] == STREAMABLE_HTTP_PATH:
             body = bytearray()
             more_body = True
             while more_body:
@@ -117,17 +125,17 @@ def _normalize_streamable_http_app(app: ASGIApp) -> ASGIApp:
     return wrapper
 
 
-# Report our package version as the MCP serverInfo version (FastMCP otherwise leaves it
-# unset, so clients/registries show the mcp SDK version instead of gigwa-mcp's).
-mcp._mcp_server.version = __version__
-
 # Wrap the StreamableHTTP app so malformed MCP notification POSTs are normalized.
-# This does not change the underlying SDK behavior for valid clients.
+# This does not change the underlying SDK behavior for valid clients. The v2 SDK takes the
+# transport configuration as app-factory parameters, so pass them through and default
+# ``json_response`` to our preference while still letting a caller override it.
 mcp._original_streamable_http_app = mcp.streamable_http_app  # type: ignore[attr-defined]
 
 
-def _streamable_http_app() -> ASGIApp:
-    return _normalize_streamable_http_app(mcp._original_streamable_http_app())
+def _streamable_http_app(**kwargs: Any) -> ASGIApp:
+    kwargs.setdefault("json_response", STREAMABLE_HTTP_JSON_RESPONSE)
+    kwargs.setdefault("streamable_http_path", STREAMABLE_HTTP_PATH)
+    return _normalize_streamable_http_app(mcp._original_streamable_http_app(**kwargs))
 
 mcp.streamable_http_app = _streamable_http_app  # type: ignore[attr-defined]
 

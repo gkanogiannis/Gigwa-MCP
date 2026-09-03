@@ -1,7 +1,7 @@
 {
   "identifier": "gkanogiannis-gigwa-mcp",
   "name": "Gigwa MCP Server",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "Drive a Gigwa genotyping server: import, server-side variant search, QC and diversity analyses.",
   "author": "Anestis Gkanogiannis",
   "authorUrl": "https://github.com/gkanogiannis",

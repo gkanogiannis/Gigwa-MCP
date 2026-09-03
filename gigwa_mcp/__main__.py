@@ -73,8 +73,14 @@ def _normalize_allowed_hosts(values: list[str]) -> list[str]:
     return normalized
 
 
-def configure_http_transport_security() -> None:
-    """Allow container/service hostnames and localhost to pass the SDK's Host checks."""
+def configure_http_transport_security() -> TransportSecuritySettings:
+    """Build the Host/Origin allow-list that lets container/service hostnames and localhost
+    pass the SDK's DNS-rebinding checks.
+
+    Returns the settings rather than assigning them: the v2 MCP SDK takes
+    ``transport_security`` as a parameter of ``streamable_http_app()``/``run()`` instead of
+    a mutable ``settings`` attribute.
+    """
     disable_dns_rebinding = os.getenv("GIGWA_MCP_DISABLE_DNS_REBINDING_PROTECTION", "").strip().lower()
     disable_dns_rebinding = disable_dns_rebinding in {"1", "true", "yes", "on"}
 
@@ -89,7 +95,7 @@ def configure_http_transport_security() -> None:
         "http://127.0.0.1,http://localhost,http://[::1]",
     )
 
-    mcp.settings.transport_security = TransportSecuritySettings(
+    return TransportSecuritySettings(
         enable_dns_rebinding_protection=not disable_dns_rebinding,
         allowed_hosts=_normalize_allowed_hosts(
             [host for host in allowed_hosts_raw.split(",") if host.strip()]
@@ -104,13 +110,16 @@ def run_http_server(port: int) -> None:
     """Run the MCP server with StreamableHTTP transport using uvicorn."""
     import uvicorn
 
-    configure_http_transport_security()
-    app = mcp.streamable_http_app()
-
     # Bind loopback by default so a local `--port` run is not exposed on every network
     # interface. Containers/remote deployments opt into all-interfaces by setting
-    # GIGWA_MCP_HOST=0.0.0.0 (the Docker image sets it; see Dockerfile).
+    # GIGWA_MCP_HOST=0.0.0.0 (the Docker image sets it; see Dockerfile). Resolved before the
+    # app is built because v2's app factory takes the host too.
     host = os.getenv("GIGWA_MCP_HOST", "127.0.0.1").strip() or "127.0.0.1"
+
+    app = mcp.streamable_http_app(
+        transport_security=configure_http_transport_security(),
+        host=host,
+    )
 
     # Print to stdout before uvicorn takes over logging
     sys.stdout.write(f"Starting Gigwa MCP server on http://{host}:{port}/mcp\n")

@@ -42,7 +42,7 @@ def test_resources_registered():
 
 
 def test_capabilities_advertise_all_sections():
-    caps = server.mcp._mcp_server.create_initialization_options().capabilities
+    caps = server.mcp._lowlevel_server.create_initialization_options().capabilities
     assert caps.tools is not None
     assert caps.prompts is not None
     assert caps.resources is not None

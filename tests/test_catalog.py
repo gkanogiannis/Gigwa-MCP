@@ -58,4 +58,15 @@ def test_catalog_resource_lists_all_tools():
 
 
 def test_default_http_mount_path():
-    assert getattr(server.mcp.settings, "streamable_http_path", None) == "/mcp"
+    """The StreamableHTTP transport must mount at /mcp -- what MCP clients expect.
+
+    In the v2 SDK the mount path is an app-factory parameter rather than a setting, so this
+    checks our own constant and that the built app actually routes it.
+    """
+    assert server.STREAMABLE_HTTP_PATH == "/mcp"
+    # The public factory is wrapped (see _streamable_http_app) and returns a bare ASGI
+    # callable, so route inspection goes through the SDK's own unwrapped Starlette app.
+    app = server.mcp._original_streamable_http_app(
+        streamable_http_path=server.STREAMABLE_HTTP_PATH, transport_security=None
+    )
+    assert any(getattr(r, "path", None) == "/mcp" for r in app.routes)

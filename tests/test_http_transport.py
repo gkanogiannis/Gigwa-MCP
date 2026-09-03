@@ -6,6 +6,7 @@ from starlette.testclient import TestClient
 from gigwa_mcp.__main__ import configure_http_transport_security, run_http_server
 from gigwa_mcp.server import (
     _MAX_NORMALIZE_BODY_BYTES,
+    STREAMABLE_HTTP_PATH,
     _normalize_streamable_http_app,
     mcp,
 )
@@ -43,17 +44,17 @@ def _drive_normalizer(chunks: list[bytes]) -> bytes:
     async def send(_message) -> None:
         pass
 
-    scope = {"type": "http", "method": "POST", "path": mcp.settings.streamable_http_path}
+    scope = {"type": "http", "method": "POST", "path": STREAMABLE_HTTP_PATH}
     asyncio.run(wrapper(scope, receive, send))
     return received["body"]
 
 
 def test_streamable_http_app_allows_docker_service_host(monkeypatch) -> None:
     monkeypatch.setenv("GIGWA_MCP_ALLOWED_HOSTS", "gigwa-mcp")
-    configure_http_transport_security()
+    security = configure_http_transport_security()
     _reset_streamable_http_session_manager()
 
-    app = mcp.streamable_http_app()
+    app = mcp.streamable_http_app(transport_security=security)
     with TestClient(app) as client:
         response = client.get("/mcp", headers={"host": "gigwa-mcp:8184"})
 
@@ -62,10 +63,10 @@ def test_streamable_http_app_allows_docker_service_host(monkeypatch) -> None:
 
 def test_streamable_http_initialize_accepts_json_only_accept_header(monkeypatch) -> None:
     monkeypatch.setenv("GIGWA_MCP_ALLOWED_HOSTS", "testserver,gigwa-mcp")
-    configure_http_transport_security()
+    security = configure_http_transport_security()
     _reset_streamable_http_session_manager()
 
-    app = mcp.streamable_http_app()
+    app = mcp.streamable_http_app(transport_security=security)
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -93,10 +94,10 @@ def test_streamable_http_initialize_accepts_json_only_accept_header(monkeypatch)
 
 def test_streamable_http_accepts_notifications_initialized_with_id(monkeypatch) -> None:
     monkeypatch.setenv("GIGWA_MCP_ALLOWED_HOSTS", "testserver,gigwa-mcp")
-    configure_http_transport_security()
+    security = configure_http_transport_security()
     _reset_streamable_http_session_manager()
 
-    app = mcp.streamable_http_app()
+    app = mcp.streamable_http_app(transport_security=security)
     headers = {
         "accept": "application/json",
         "content-type": "application/json",

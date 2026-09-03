@@ -10,7 +10,7 @@ import pandas as pd
 from ..analysis.genotypes import _name_map, module_of
 from ..analysis.results import resolve_output_dir, write_csv
 from ..client import ProgressStatus
-from ..errors import GigwaAPIError
+from ..errors import GigwaAPIError, GigwaError
 from ..server import get_client, mcp, progress_tool
 
 
@@ -177,6 +177,29 @@ def search_callsets(
     )
 
 
+def _individual_to_sample_names(client, variant_set_db_id: str) -> dict[str, list[str]]:
+    """Map Gigwa's individual id -> the sample name(s) the analysis tools use.
+
+    Gigwa keys individual metadata by the individual id, which is the leading segment of a
+    callset's ``callSetName`` (``4970`` in ``4970-1-Run1``). The genotype matrix, however,
+    names samples with :func:`~gigwa_mcp.analysis.genotypes._name_map`, which derives them
+    from ``sampleDbId``. On real data those two id spaces do not agree, so a join needs this
+    bridge. Returns ``{}`` if the callsets cannot be read (the mapping is best-effort).
+    """
+    try:
+        callsets = client.search_callsets(variant_set_db_id)
+    except GigwaError:  # metadata is still worth writing without the bridge column
+        return {}
+    names = _name_map(callsets, variant_set_db_id)
+    out: dict[str, list[str]] = {}
+    for cs in callsets:
+        individual = str(cs.get("callSetName") or "").split("-")[0]
+        resolved = names.get(cs.get("callSetDbId"))
+        if individual and resolved:
+            out.setdefault(individual, []).append(resolved)
+    return out
+
+
 @mcp.tool()
 def get_germplasm_metadata(
     variant_set_db_id: str,
@@ -185,68 +208,50 @@ def get_germplasm_metadata(
     """Fetch server-stored per-individual metadata (germplasm attributes) for a database.
 
     Reads the attributes already stored in Gigwa (imported earlier via ``import_metadata``
-    or a BrAPI source) for the module of ``variant_set_db_id``, via BrAPI germplasm. Writes
-    ``germplasm_metadata.csv`` (one row per accession, attribute columns) that can be fed
-    back to the grouping tools (``diversity_fst`` / ``diversity_by_group`` via
-    ``metadata_tsv``, which expects **tab**-separated input — convert the CSV first).
+    or a BrAPI source) for the module of ``variant_set_db_id`` and writes
+    ``germplasm_metadata.csv`` — one row per accession, with attribute columns.
 
-    When the germplasm (accession) level exposes no attributes — as on builds where the
-    per-individual metadata lives on the samples instead — this falls back to the callset
-    (sample) level via ``search_callsets`` and writes that metadata instead. The fallback
-    file is keyed so either column joins to the grouping tools: ``germplasm_name`` is the
-    resolved sample name they match on first, ``germplasm_db_id`` the callSetDbId they fall
-    back to. The server's raw callset label is not in this file — run ``search_callsets``
-    for ``sample_metadata.csv`` if you need it. Returns an empty-result note only when
-    neither level exposes any attribute.
+    **Which column to join on.** ``germplasm_name`` is Gigwa's *individual* id, which on
+    real data does **not** match the sample names the analysis tools use. Join on the
+    ``sample_name`` column instead: it is the name ``diversity_fst`` /
+    ``diversity_by_group`` match against (via ``metadata_tsv``, which expects **tab**-
+    separated input — convert the CSV first). Where one individual carries several samples
+    the column holds them ``;``-joined and needs splitting first. It is blank when the
+    callsets could not be read.
+
+    For the sample/callset level itself — raw ``callSetName``, ``sampleDbId`` and per-sample
+    ``additionalInfo`` — use ``search_callsets`` instead.
     """
     client = get_client()
     records = client.get_germplasm(variant_set_db_id)
     df = pd.DataFrame(_germplasm_row(g) for g in records) if records else pd.DataFrame()
     attr_cols = [c for c in df.columns if c not in ("germplasm_name", "germplasm_db_id")]
 
-    if records and attr_cols:
-        out = resolve_output_dir(variant_set_db_id, output_dir)
-        path = write_csv(df, out, "germplasm_metadata.csv")
+    if not records or not attr_cols:
         return (
-            f"Germplasm metadata for {module_of(variant_set_db_id)}: "
-            f"{len(df)} accession(s), {len(attr_cols)} attribute(s)\n"
-            f"Attributes: {', '.join(attr_cols)}\n"
-            f"File: {path}"
+            f"No server-stored metadata available for {module_of(variant_set_db_id)} "
+            "(the germplasm level exposes no attributes — import metadata with "
+            "import_metadata, try search_callsets for sample-level attributes, or supply a "
+            "local TSV instead)."
         )
 
-    # Germplasm level has no attributes -> fall back to callset (sample) additionalInfo.
-    callsets = client.search_callsets(variant_set_db_id)
-    fb_attr_cols, fb_rows = (
-        _callset_metadata(callsets, variant_set_db_id) if callsets else ([], [])
-    )
-    if fb_attr_cols:
-        cols = ["germplasm_name", "germplasm_db_id"] + fb_attr_cols
-        # Keyed the way the grouping tools match: ``germplasm_name`` is the resolved
-        # sample name (== GenotypeMatrix.sample_names) and ``germplasm_db_id`` is the
-        # callSetDbId (== GenotypeMatrix.sample_ids), so either column joins.
-        rows = [
-            {
-                "germplasm_name": r["sample_name"],
-                "germplasm_db_id": r["callSetDbId"],
-                **{k: r[k] for k in fb_attr_cols},
-            }
-            for r in fb_rows
-        ]
-        df = pd.DataFrame(rows, columns=cols)
-        out = resolve_output_dir(variant_set_db_id, output_dir)
-        path = write_csv(df, out, "germplasm_metadata.csv")
-        return (
-            f"Germplasm metadata for {module_of(variant_set_db_id)}: none at germplasm "
-            f"level — fell back to callset (sample) metadata.\n"
-            f"{len(df)} sample(s), {len(fb_attr_cols)} attribute(s)\n"
-            f"Attributes: {', '.join(fb_attr_cols)}\n"
-            f"File: {path}"
-        )
+    # Bridge Gigwa's individual id space to the analysis tools' sample names so the file can
+    # actually be joined; see _individual_to_sample_names.
+    bridge = _individual_to_sample_names(client, variant_set_db_id)
+    df.insert(0, "sample_name", [
+        ";".join(bridge.get(str(n), [])) for n in df["germplasm_name"]
+    ])
+    matched = int((df["sample_name"] != "").sum())
 
+    out = resolve_output_dir(variant_set_db_id, output_dir)
+    path = write_csv(df, out, "germplasm_metadata.csv")
     return (
-        f"No server-stored metadata available for {module_of(variant_set_db_id)} "
-        "(neither the germplasm nor the callset level exposes attributes — import metadata "
-        "with import_metadata, or supply a local TSV instead)."
+        f"Germplasm metadata for {module_of(variant_set_db_id)}: "
+        f"{len(df)} accession(s), {len(attr_cols)} attribute(s)\n"
+        f"Attributes: {', '.join(attr_cols)}\n"
+        f"Join on sample_name ({matched}/{len(df)} resolved to analysis sample names); "
+        "germplasm_name is Gigwa's individual id and does not match them.\n"
+        f"File: {path}"
     )
 
 

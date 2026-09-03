@@ -1,4 +1,4 @@
-"""Metadata tools: callset (sample) attribute dumps and the germplasm→callset fallback.
+"""Metadata tools: callset (sample) attribute dumps and germplasm-level metadata.
 
 Uses synthetic callset/germplasm payloads shaped like the two naming conventions Gigwa
 builds use in the wild — no live server. See tests/test_genotypes.py for the same split.
@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from gigwa_mcp.analysis.genotypes import _name_map
+from gigwa_mcp.errors import GigwaAPIError
 from gigwa_mcp.tools import metadata
 
 # Variant set ids matching each fixture's ``<module>§<project>§<run>`` shape.
@@ -34,7 +35,7 @@ ICARDA_CALLSETS = [
 ]
 
 # The other shape: callSetName is a meaningless index, the accession is in sampleDbId,
-# and callSetDbId differs from sampleDbId -- which is what pins down the fallback's keys.
+# and callSetDbId differs from sampleDbId.
 DISTINCT_CALLSETS = [
     {
         "callSetDbId": "S1",
@@ -54,18 +55,15 @@ DISTINCT_CALLSETS = [
 class FakeClient:
     """Stands in for GigwaClient; ``germplasm`` and ``callsets`` are set per test."""
 
-    def __init__(self, germplasm=None, callsets=None, callsets_forbidden=False):
+    def __init__(self, germplasm=None, callsets=None):
         self._germplasm = germplasm or []
         self._callsets = callsets or []
-        self._callsets_forbidden = callsets_forbidden
         self.callset_calls = 0
 
     def get_germplasm(self, variant_set_db_id):
         return self._germplasm
 
     def search_callsets(self, variant_set_db_id):
-        if self._callsets_forbidden:
-            raise AssertionError("search_callsets must not be called on the germplasm path")
         self.callset_calls += 1
         return self._callsets
 
@@ -157,25 +155,85 @@ def test_search_callsets_dumps_names_even_without_attributes(monkeypatch, tmp_pa
     assert df["sample_name"].tolist() == ["acc1"]
 
 
-# -- get_germplasm_metadata: germplasm level --------------------------------
+# -- get_germplasm_metadata -------------------------------------------------
 
-def test_get_germplasm_metadata_prefers_the_germplasm_level(monkeypatch, tmp_path):
-    """With germplasm attributes present the callset level is never consulted."""
+def test_get_germplasm_metadata_writes_attributes_from_the_germplasm_level(monkeypatch, tmp_path):
     records = [
-        {"germplasmName": "acc1", "germplasmDbId": "G1", "additionalInfo": {"Country": "SYR"}},
-        {"germplasmName": "acc2", "germplasmDbId": "G2", "additionalInfo": {"Country": "MAR"}},
+        {"germplasmName": "4970", "germplasmDbId": "G1", "additionalInfo": {"Country": "SYR"}},
+        {"germplasmName": "3640", "germplasmDbId": "G2", "additionalInfo": {"Country": "MAR"}},
     ]
-    _patch(monkeypatch, FakeClient(germplasm=records, callsets_forbidden=True))
-    out = _fn(metadata.get_germplasm_metadata)(DISTINCT_VS, output_dir=str(tmp_path))
+    _patch(monkeypatch, FakeClient(germplasm=records, callsets=ICARDA_CALLSETS))
+    out = _fn(metadata.get_germplasm_metadata)(ICARDA_VS, output_dir=str(tmp_path))
 
     assert "2 accession(s), 1 attribute(s)" in out
-    assert "fell back" not in out
     df = _read(tmp_path, "germplasm_metadata.csv")
-    assert df["germplasm_name"].tolist() == ["acc1", "acc2"]
+    assert list(df.columns) == ["sample_name", "germplasm_name", "germplasm_db_id", "Country"]
     assert df["Country"].tolist() == ["SYR", "MAR"]
 
 
-# -- get_germplasm_metadata: callset fallback -------------------------------
+def test_germplasm_metadata_bridges_individual_ids_to_analysis_sample_names(monkeypatch, tmp_path):
+    """germplasm_name is Gigwa's individual id and does NOT match the analysis sample names.
+
+    The ICARDA fixture is the real shape: individual "4970" (the callSetName prefix) is the
+    sample the matrix calls "9764" (derived from sampleDbId). Without the bridge column a
+    join on germplasm_name silently matches nothing -- or worse, the wrong row.
+    """
+    records = [{"germplasmName": "4970", "germplasmDbId": "G1",
+                "additionalInfo": {"Country": "SYR"}}]
+    _patch(monkeypatch, FakeClient(germplasm=records, callsets=ICARDA_CALLSETS))
+    out = _fn(metadata.get_germplasm_metadata)(ICARDA_VS, output_dir=str(tmp_path))
+
+    df = _read(tmp_path, "germplasm_metadata.csv")
+    assert df["germplasm_name"].tolist() == ["4970"]
+    assert df["sample_name"].tolist() == ["9764"]          # what _name_map yields
+    assert df["sample_name"].tolist() != df["germplasm_name"].tolist()
+    assert "Join on sample_name (1/1 resolved" in out
+
+
+def test_germplasm_metadata_marks_individuals_it_cannot_bridge(monkeypatch, tmp_path):
+    """An individual with no matching callset gets a blank sample_name, not a wrong one."""
+    records = [
+        {"germplasmName": "4970", "germplasmDbId": "G1", "additionalInfo": {"Country": "SYR"}},
+        {"germplasmName": "nosuch", "germplasmDbId": "G2", "additionalInfo": {"Country": "MAR"}},
+    ]
+    _patch(monkeypatch, FakeClient(germplasm=records, callsets=ICARDA_CALLSETS))
+    out = _fn(metadata.get_germplasm_metadata)(ICARDA_VS, output_dir=str(tmp_path))
+
+    df = _read(tmp_path, "germplasm_metadata.csv")
+    assert df.set_index("germplasm_name")["sample_name"].to_dict() == {"4970": "9764", "nosuch": ""}
+    assert "Join on sample_name (1/2 resolved" in out
+
+
+def test_germplasm_metadata_joins_multi_sample_individuals_with_a_separator(monkeypatch, tmp_path):
+    callsets = [
+        {"callSetDbId": "WD§1", "callSetName": "4970-1-Run1", "sampleDbId": "WD§1"},
+        {"callSetDbId": "WD§2", "callSetName": "4970-2-Run1", "sampleDbId": "WD§2"},
+    ]
+    records = [{"germplasmName": "4970", "germplasmDbId": "G1",
+                "additionalInfo": {"Country": "SYR"}}]
+    _patch(monkeypatch, FakeClient(germplasm=records, callsets=callsets))
+    _fn(metadata.get_germplasm_metadata)(ICARDA_VS, output_dir=str(tmp_path))
+
+    df = _read(tmp_path, "germplasm_metadata.csv")
+    assert df["sample_name"].tolist() == ["1;2"]
+
+
+def test_germplasm_metadata_still_writes_when_callsets_are_unreadable(monkeypatch, tmp_path):
+    """The bridge is best-effort: a callset error must not lose the metadata itself."""
+    class NoCallsets(FakeClient):
+        def search_callsets(self, variant_set_db_id):
+            raise GigwaAPIError("callsets unavailable")
+
+    records = [{"germplasmName": "4970", "germplasmDbId": "G1",
+                "additionalInfo": {"Country": "SYR"}}]
+    _patch(monkeypatch, NoCallsets(germplasm=records))
+    out = _fn(metadata.get_germplasm_metadata)(ICARDA_VS, output_dir=str(tmp_path))
+
+    df = _read(tmp_path, "germplasm_metadata.csv")
+    assert df["sample_name"].tolist() == [""]
+    assert df["Country"].tolist() == ["SYR"]
+    assert "0/1 resolved" in out
+
 
 @pytest.mark.parametrize(
     "germplasm",
@@ -186,39 +244,15 @@ def test_get_germplasm_metadata_prefers_the_germplasm_level(monkeypatch, tmp_pat
         ),
     ],
 )
-def test_get_germplasm_metadata_falls_back_to_callsets(monkeypatch, tmp_path, germplasm):
-    client = _patch(monkeypatch, FakeClient(germplasm=germplasm, callsets=ICARDA_CALLSETS))
+def test_get_germplasm_metadata_reports_when_the_germplasm_level_is_empty(
+    monkeypatch, tmp_path, germplasm
+):
+    """No silent callset fallback: PR #2's client already tries Gigwa's native endpoint, so
+    an empty germplasm level means there is nothing to fall back to -- say so and point at
+    the sample-level tool instead."""
+    _patch(monkeypatch, FakeClient(germplasm=germplasm, callsets=ICARDA_CALLSETS))
     out = _fn(metadata.get_germplasm_metadata)(ICARDA_VS, output_dir=str(tmp_path))
 
-    assert "fell back to callset (sample) metadata" in out
-    assert "2 sample(s), 3 attribute(s)" in out
-    assert client.callset_calls == 1
-    df = _read(tmp_path, "germplasm_metadata.csv")
-    assert list(df.columns) == ["germplasm_name", "germplasm_db_id", "Country", "ICARDA_IG", "SeedID"]
-
-
-def test_fallback_keys_join_to_the_analysis_sample_names(monkeypatch, tmp_path):
-    """germplasm_name == GenotypeMatrix.sample_names, germplasm_db_id == sample_ids.
-
-    Both are what tools/diversity.py:_sample_group_map matches on (name first, then id),
-    so the written file groups samples without any manual renaming.
-    """
-    _patch(monkeypatch, FakeClient(germplasm=[], callsets=DISTINCT_CALLSETS))
-    _fn(metadata.get_germplasm_metadata)(DISTINCT_VS, output_dir=str(tmp_path))
-
-    df = _read(tmp_path, "germplasm_metadata.csv")
-    names = _name_map(DISTINCT_CALLSETS, DISTINCT_VS)
-    assert df["germplasm_name"].tolist() == ["ACC0001", "ACC0002"] == list(names.values())
-    # sample_ids are callSetDbIds -- explicitly not the sampleDbIds, which differ here.
-    assert df["germplasm_db_id"].tolist() == ["S1", "S2"] == list(names)
-    assert df["germplasm_db_id"].tolist() != [c["sampleDbId"] for c in DISTINCT_CALLSETS]
-
-
-def test_get_germplasm_metadata_reports_when_neither_level_has_metadata(monkeypatch, tmp_path):
-    bare = [{"callSetDbId": "S1", "callSetName": "acc1", "sampleDbId": "VS§acc1-1-run"}]
-    _patch(monkeypatch, FakeClient(germplasm=[], callsets=bare))
-    out = _fn(metadata.get_germplasm_metadata)(DISTINCT_VS, output_dir=str(tmp_path))
-
     assert "No server-stored metadata available" in out
-    assert "import_metadata" in out
+    assert "search_callsets" in out
     assert not (tmp_path / "germplasm_metadata.csv").exists()
