@@ -238,6 +238,59 @@ def test_export_progress_and_download_export_split():
         assert written.read_bytes() == b"DATA"
 
 
+def test_download_export_refuses_off_origin_urls_and_never_leaks_the_token():
+    """The download URL is caller-supplied and the request carries the bearer token, so an
+    absolute URL naming any other host must be rejected before a request is made."""
+    import tempfile
+    from pathlib import Path
+
+    import pytest
+
+    from gigwa_mcp.errors import GigwaExportError
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, content=b"DATA")
+
+    client = make_client(_token_or(handler))
+    with tempfile.TemporaryDirectory() as d:
+        dest = Path(d) / "out.vcf"
+
+        for hostile in (
+            "http://evil.example/steal",
+            "https://test/gigwa/x",          # right host, wrong scheme
+            "http://test.evil.example/x",    # prefix of the real host
+        ):
+            with pytest.raises(GigwaExportError, match="not the configured Gigwa server"):
+                client.download_export(hostile, dest)
+
+        # Nothing was ever sent anywhere, so the Authorization header did not leak.
+        assert [r.url.host for r in seen if r.url.host != "test"] == []
+
+        # A same-origin absolute URL and a relative path both still work.
+        assert client.download_export("http://test/gigwaV2/out.vcf", dest).read_bytes() == b"DATA"
+        assert client.download_export("/gigwaV2/out.vcf", dest).read_bytes() == b"DATA"
+
+
+def test_download_export_treats_httpish_relative_paths_as_relative():
+    """A relative path merely *starting* with 'http' must not be mistaken for absolute."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, content=b"DATA")
+
+    import tempfile
+    from pathlib import Path
+
+    client = make_client(_token_or(handler))
+    with tempfile.TemporaryDirectory() as d:
+        client.download_export("/httpexport/out.vcf", Path(d) / "out.vcf")
+    assert seen["url"] == "http://test/httpexport/out.vcf"
+
+
 def test_abort_calls_abort_process():
     seen = {}
 

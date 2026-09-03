@@ -911,10 +911,27 @@ class GigwaClient:
 
     def download_export(self, export_url: str, dest_path: str | Path) -> Path:
         """Fetch a completed export from the URL :meth:`start_export` returned, once
-        :meth:`export_progress` reports it complete."""
+        :meth:`export_progress` reports it complete.
+
+        The URL reaches this from the ``fetch_export_file`` tool, i.e. it is caller-supplied.
+        Since the request carries this session's bearer token, an absolute URL is required to
+        point at the configured Gigwa server — otherwise the credential would be handed to
+        whatever host the URL names. :meth:`start_export` only ever returns a same-origin URL,
+        so nothing legitimate is rejected.
+        """
         split = urllib.parse.urlsplit(self.config.base_url)
         origin = f"{split.scheme}://{split.netloc}"
-        download_url = export_url if export_url.startswith("http") else f"{origin}{export_url}"
+        parsed = urllib.parse.urlsplit(export_url)
+        if parsed.scheme or parsed.netloc:
+            if (parsed.scheme, parsed.netloc) != (split.scheme, split.netloc):
+                raise GigwaExportError(
+                    f"Refusing to download an export from '{parsed.scheme}://{parsed.netloc}': "
+                    f"it is not the configured Gigwa server ({origin}). The download URL must "
+                    "be the one export_genotypes(wait=False) returned."
+                )
+            download_url = export_url
+        else:
+            download_url = f"{origin}{export_url}"
         dl = self._check(self._http.get(download_url, headers=self._token_header()), "export download")
 
         dest_path = Path(dest_path)
