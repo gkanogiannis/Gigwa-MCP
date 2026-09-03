@@ -184,3 +184,26 @@ def test_server_info_surfaces_user_info_lines():
 
     assert "Roles: ROLE_ADMIN" in out
     assert "Writable databases: demo" in out
+
+def test_render_summary_prints_exact_variant_set_db_id():
+    # Reproduces the shape that caused a real mistake: a human-readable project *name*
+    # ("refNB") that is NOT the id segment ("1") — list_content must print the real id
+    # per run so a caller never has to guess/assemble one by hand.
+    summary = {
+        "Database1": {
+            "database": "DIVRICE_NB",
+            "individuals": 497,
+            "markers": 5391401,
+            "Project1": {
+                "name": "refNB",
+                "variantType": ["SNP"],
+                "ploidy": 2,
+                "samples": 497,
+                "runs": ["03052022"],
+            },
+        }
+    }
+    out = connection._render_summary(summary)
+    assert "project 'refNB'" in out
+    assert "variant_set_db_id: DIVRICE_NB§1§03052022" in out
+    assert "refNB§1§03052022" not in out  # the name must never leak into the id segment

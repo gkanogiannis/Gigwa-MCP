@@ -38,3 +38,7 @@ class GigwaAPIError(GigwaError):
 
 class GigwaImportError(GigwaError):
     """An import job failed or was aborted on the server."""
+
+
+class GigwaExportError(GigwaError):
+    """An export job failed or was aborted on the server."""

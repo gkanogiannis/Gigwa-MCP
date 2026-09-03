@@ -300,6 +300,12 @@ TOOL_CATALOG: dict[str, ToolInfo] = {
     "search_callsets": ToolInfo(
         "Metadata", "Dump per-sample (callset) metadata: names + additionalInfo attributes.",
         _RETRIEVE, _T_GENOPHENO),
+    "list_metadata_values": ToolInfo(
+        "Metadata", "List individual-metadata field names and their distinct values.",
+        _RETRIEVE, _T_GENOPHENO),
+    "filter_individuals_by_metadata": ToolInfo(
+        "Metadata", "Select individuals matching metadata field/value filters.",
+        _SEARCH, _T_GENOPHENO),
     # -- Variant search --
     "count_variants": ToolInfo(
         "Variant search", "Count variants matching region/MAF/missing filters, server-side.",
@@ -308,9 +314,18 @@ TOOL_CATALOG: dict[str, ToolInfo] = {
         "Variant search", "Search variants server-side and write the matching list to CSV.",
         _SEARCH, _T_GENVAR),
     # -- Export --
+    "list_export_formats": ToolInfo(
+        "Export", "List export formats this instance supports, with type/ploidy compatibility.",
+        _RETRIEVE, _T_GENVAR),
     "export_genotypes": ToolInfo(
-        "Export", "Export a variant set to a file (VCF/PLINK/Flapjack; varies by build).",
+        "Export", "Export a variant set, or a filtered/selected subset, to a file.",
         _FORMAT, _T_GENVAR),
+    "get_export_progress": ToolInfo(
+        "Export", "Report the status of the current session's running export.",
+        _HANDLE, _T_DATA),
+    "fetch_export_file": ToolInfo(
+        "Export", "Retrieve a completed export started with export_genotypes(wait=False).",
+        _RETRIEVE, _T_DATA),
     # -- Quality control --
     "qc_call_rate": ToolInfo(
         "Quality control", "Per-sample & per-marker call rate; flag low-call entities.",
@@ -391,7 +406,7 @@ _PARAM_DESCRIPTIONS: dict[str, str] = {
     "url": "Target Gigwa base URL to connect to (e.g. https://host:port/gigwa); a bare host:port assumes https.",
     "profile": "Optional credential profile: reads GIGWA_USER_<PROFILE>/GIGWA_PASS_<PROFILE> from the environment (never typed in chat). Omit to use the default GIGWA_USER/GIGWA_PASS.",
     "anonymous": "Connect without credentials (Gigwa's anonymous public/read-only access).",
-    "variant_set_db_id": "BrAPI variantSetDbId identifying the run (MODULE§project§run); from list_variant_sets / list_content.",
+    "variant_set_db_id": "BrAPI variantSetDbId identifying the run (MODULE§project§run) -- copy the exact string from list_variant_sets / list_content, never assemble one by hand: the middle segment is a numeric project index, not the project's name, and a wrong guess fails with an opaque HTTP 500 rather than a clear error.",
     "method": "Genotype source: 'vcf' (full export, cached) or 'allelematrix' (paged, server-side subset).",
     "max_markers": "Cap the number of markers analysed (evenly-spaced subsample); omit to use all.",
     "max_samples": "Cap the number of samples/callsets sampled (allelematrix path).",
@@ -405,7 +420,7 @@ _PARAM_DESCRIPTIONS: dict[str, str] = {
     "ploidy": "Sample ploidy (default 2).",
     "skip_monomorphic": "Drop non-variant (monomorphic) markers during import.",
     "clear_project_data": "Replace any existing data in the project before importing.",
-    "wait": "Block until the import finishes (True) or return a progress token immediately (False).",
+    "wait": "Block until the job finishes (True, default) or return immediately once it's kicked off (False) -- an import returns a progress token to poll with get_import_progress, an export returns a download URL to poll with get_export_progress and retrieve with fetch_export_file.",
     "snp_xlsx": "Path to a DArTseq SNP xlsx report.",
     "silico_xlsx": "Path to a Silico-DArT xlsx report.",
     "vcf_path": "Path to the VCF file (.vcf or .vcf.gz) to import.",
@@ -425,8 +440,14 @@ _PARAM_DESCRIPTIONS: dict[str, str] = {
     "max_maf": "Maximum minor-allele frequency (0-1).",
     "max_missing_data": "Maximum per-variant missing-data fraction (0-1).",
     "max_variants": "Maximum number of matching variants to retrieve.",
-    "format": "Export format: VCF, PLINK or Flapjack (availability varies by Gigwa build).",
+    "format": "Export format name, e.g. VCF (default), PLINK, FLAPJACK or VCF.gz; see list_export_formats for what this instance offers (and each format's type/ploidy restrictions).",
     "timeout": "Maximum seconds to wait for the export to complete.",
+    "selected_variant_types": "Restrict the export to these variant types, ';'-joined (e.g. 'SNP' or 'SNP;INDEL'); omit for all types.",
+    "individuals": "Individual-level identifiers to include in the export (e.g. from filter_individuals_by_metadata), not sample/callset ids; omit for all. Gigwa resolves each individual to all of its samples/callsets across runs server-side, including when an individual has more than one, so no manual sample mapping or dedup is needed.",
+    "metadata_fields": "Individual metadata columns to embed in the export (from get_germplasm_metadata); omit for none.",
+    "keep_on_server": "Also leave a copy of the export in the user's Gigwa temp-output area after downloading it here.",
+    "filters_json": "JSON object mapping each metadata field name to a list of acceptable values, e.g. {\"GroupK4\": [\"cA\"]} (see list_metadata_values for field/value names). Multiple fields AND together; multiple values for one field OR together.",
+    "download_url": "Download URL returned by export_genotypes(..., wait=False), once get_export_progress reports the export complete.",
     "min_sample_call_rate": "Flag samples with call rate below this (0-1).",
     "min_marker_call_rate": "Flag markers with call rate below this (0-1).",
     "outlier_sd": "Flag points more than this many standard deviations from the mean.",

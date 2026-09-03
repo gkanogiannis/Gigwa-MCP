@@ -11,6 +11,15 @@ Verified against Gigwa 2.12-RELEASE:
   string, e.g. "import::<user>::<uuid>"; the import runs asynchronously.
 - ``GET /gigwa/progress?progressToken=...`` returns a JSON status object, or
   HTTP 204 when there is nothing to report.
+- ``POST /gigwa/exportData`` (the endpoint the Gigwa web UI itself uses for a
+  filtered/selection-based export) returns the eventual download URL as plain text
+  immediately, while the export runs server-side; its progress is polled via
+  ``GET /gigwa/progress`` with **no** ``progressToken`` param and an ``Authorization:
+  Bearer export_<token>`` header instead (see ``GigwaClient._export_progress``).
+- ``POST /gigwa/distinctIndividualMetadata/{module}`` and
+  ``POST /gigwa/filterIndividualsFromMetadata/{module}`` (the endpoints behind the Gigwa
+  web UI's "select individuals by attribute" filters) expose per-individual metadata
+  Gigwa's BrAPI ``search/germplasm`` does not reliably populate on every build.
 """
 
 from __future__ import annotations
@@ -25,7 +34,7 @@ from typing import Any, Callable, Iterable, Sequence
 import httpx
 
 from .config import GigwaConfig
-from .errors import GigwaAPIError, GigwaAuthError, GigwaImportError
+from .errors import GigwaAPIError, GigwaAuthError, GigwaExportError, GigwaImportError
 from .progress import notify
 
 
@@ -165,8 +174,13 @@ class GigwaClient:
         params: dict[str, Any] | None = None,
         files: Sequence[tuple[str, Any]] | None = None,
         json_body: Any | None = None,
+        headers: dict[str, str] | None = None,
         _retry_auth: bool = True,
     ) -> httpx.Response:
+        """Issue one request. ``headers``, when given, replaces the normal auth header
+        entirely (used to poll export progress under the ``"export_"``-prefixed pseudo
+        token — see :meth:`_export_progress`) and disables the 401 auto-retry, since that
+        override isn't the expired-token case the retry exists for."""
         url = f"{self.rest}{path}"
         resp = self._http.request(
             method,
@@ -174,9 +188,9 @@ class GigwaClient:
             params=params,
             files=files,
             json=json_body,
-            headers=self._token_header(),
+            headers=headers if headers is not None else self._token_header(),
         )
-        if resp.status_code == 401 and _retry_auth and not self.anonymous:
+        if resp.status_code == 401 and _retry_auth and not self.anonymous and headers is None:
             # Token likely expired -> refresh once and retry.
             self._token = None
             return self.request(
@@ -368,25 +382,27 @@ class GigwaClient:
             return None
         return ProgressStatus(raw=data)
 
-    def wait_for_completion(
+    def _poll_until_complete(
         self,
-        token: str,
+        poll_fn: Callable[[], "ProgressStatus | None"],
         *,
-        poll_interval: float = 1.5,
-        timeout: float = 1800.0,
-        on_update: Callable[[ProgressStatus], None] | None = None,
+        poll_interval: float,
+        timeout: float,
+        what: str,
+        error_cls: type[Exception] = GigwaImportError,
     ) -> ProgressStatus:
-        """Poll progress until the job completes, errors, or aborts.
+        """Shared polling loop behind :meth:`wait_for_completion` (imports) and
+        :meth:`_wait_for_export` (exports) — same server-side ``ProgressIndicator`` shape,
+        different process-id/lookup mechanism per :meth:`progress` vs. :meth:`_export_progress`.
 
-        A 204 (no content) is treated as "finished" only once at least one real
-        status has been observed, so we don't mistake a not-yet-started job for a
-        completed one.
+        A 204 (no content) is treated as "finished" only once at least one real status has
+        been observed, so we don't mistake a not-yet-started job for a completed one.
         """
         deadline = time.monotonic() + timeout
         last: ProgressStatus | None = None
         seen = False
         while True:
-            status = self.progress(token)
+            status = poll_fn()
             if status is not None:
                 seen = True
                 last = status
@@ -396,12 +412,10 @@ class GigwaClient:
                     pct if (pct is not None and 0 <= pct <= 100) else None,
                     100,
                 )
-                if on_update is not None:
-                    on_update(status)
                 if status.error:
-                    raise GigwaImportError(f"Import failed: {status.error}")
+                    raise error_cls(f"{what} failed: {status.error}")
                 if status.aborted:
-                    raise GigwaImportError("Import was aborted on the server.")
+                    raise error_cls(f"{what} was aborted on the server.")
                 if status.complete:
                     return status
             elif seen:
@@ -409,11 +423,73 @@ class GigwaClient:
                 return last if last is not None else ProgressStatus(raw={"complete": True})
 
             if time.monotonic() >= deadline:
-                raise GigwaImportError(
-                    f"Timed out after {timeout:.0f}s waiting for import to finish "
+                raise error_cls(
+                    f"Timed out after {timeout:.0f}s waiting for {what.lower()} to finish "
                     f"(last status: {last.summary() if last else 'none'})."
                 )
             time.sleep(poll_interval)
+
+    def wait_for_completion(
+        self,
+        token: str,
+        *,
+        poll_interval: float = 1.5,
+        timeout: float = 1800.0,
+        on_update: Callable[[ProgressStatus], None] | None = None,
+    ) -> ProgressStatus:
+        """Poll progress until the job completes, errors, or aborts."""
+
+        def poll() -> ProgressStatus | None:
+            status = self.progress(token)
+            if status is not None and on_update is not None:
+                on_update(status)
+            return status
+
+        return self._poll_until_complete(
+            poll, poll_interval=poll_interval, timeout=timeout, what="Import"
+        )
+
+    # -- export progress (distinct process-id scheme from imports) ---------
+    def export_progress(self) -> ProgressStatus | None:
+        """Poll the progress of *this session's* most recent export (started via
+        :meth:`start_export`/:meth:`export_selection`).
+
+        Gigwa tracks an export under the process id ``"export_" + <session token>``
+        (``GigwaGa4ghServiceImpl.exportVariants``: ``processId = "export_" + token``), and
+        ``GET /gigwa/progress`` falls back to reading its process id straight from the
+        ``Authorization`` header (``tokenManager.readToken(request)``) whenever no
+        ``progressToken`` query parameter is given (``GigwaRestController.getProcessProgress``).
+        So — unlike an import, which is polled by the token *returned from* the import call —
+        an export is polled by re-authenticating with an ``"export_"``-prefixed pseudo-token
+        instead of a query parameter, and takes no id: there is exactly one "current export"
+        per authenticated session. Verified against the Gigwa server source (not just a
+        browser capture): confirms the mechanism is exactly this, not a coincidence of one
+        build's URL.
+        """
+        if not self._token:
+            self._generate_token()
+        resp = self.request(
+            "GET", "/gigwa/progress", headers={"Authorization": f"Bearer export_{self._token}"}
+        )
+        if resp.status_code == 204:
+            return None
+        self._check(resp, "progress (export)")
+        try:
+            data = resp.json()
+        except ValueError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        return ProgressStatus(raw=data)
+
+    def _wait_for_export(self, *, poll_interval: float, timeout: float) -> ProgressStatus:
+        return self._poll_until_complete(
+            self.export_progress,
+            poll_interval=poll_interval,
+            timeout=timeout,
+            what="Export",
+            error_cls=GigwaExportError,
+        )
 
     # -- data access (Phase 2) --------------------------------------------
     def search_callsets(self, variant_set_db_id: str) -> list[dict[str, Any]]:
@@ -750,6 +826,146 @@ class GigwaClient:
             notify(f"Exporting {fmt} from Gigwa…")
             time.sleep(poll_interval)
 
+    def get_export_formats(self) -> dict[str, dict[str, str]]:
+        """List export formats this Gigwa build's export-handler registry actually offers.
+
+        ``GET /gigwa/exportFormats`` -> format name -> {"desc", "supportedPloidyLevels"
+        (``;``-joined, e.g. ``"2"`` for diploid-only or empty for any ploidy),
+        "supportedVariantTypes" (``;``-joined, e.g. ``"SNP;INDEL;MIXED"``, empty for any),
+        "dataFileExtensions" (``;``-joined)}. This is the server's live registry (which
+        format handlers are registered, and whether experimental ones are enabled on this
+        instance) rather than a hardcoded list, so it reflects exactly what a given build
+        supports and each format's variant-type/ploidy restrictions.
+        """
+        resp = self._check(self.request("GET", "/gigwa/exportFormats"), "exportFormats")
+        try:
+            data = resp.json()
+        except ValueError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def start_export(
+        self,
+        variant_set_db_id: str,
+        *,
+        fmt: str = "VCF",
+        reference_name: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        selected_variant_types: str | None = None,
+        min_maf: float | None = None,
+        max_maf: float | None = None,
+        max_missing_data: float | None = None,
+        callset_ids: Sequence[str] | None = None,
+        exported_individuals: Sequence[str] | None = None,
+        metadata_fields: Sequence[str] | None = None,
+        keep_on_server: bool = False,
+    ) -> str:
+        """Kick off a filtered/selected export and return its eventual download URL
+        immediately, *without* waiting for the export to finish — the non-blocking half of
+        :meth:`export_selection` (which POSTs this, waits via :meth:`export_progress`, then
+        downloads). Pair with :meth:`export_progress` to poll status and
+        :meth:`download_export` to retrieve the file once complete.
+
+        Accepts the same region/MAF/missing-data filters as :meth:`count_variants`, plus
+        ``selected_variant_types`` (``;``-joined, e.g. ``"SNP;INDEL"`` — see
+        :meth:`get_export_formats` for what a given ``fmt`` accepts), a specific
+        ``exported_individuals``/``callset_ids`` selection (default: everyone), and
+        ``metadata_fields`` (individual metadata columns to embed in the export). ``fmt``
+        is any format name the server advertises, matched case-sensitively against its
+        export-handler registry — including ``"VCF.gz"`` (bgzipped VCF), which is its own
+        registered format, not a flag on plain ``"VCF"``.
+
+        ``POST /gigwa/exportData`` itself returns immediately with this URL as a
+        plain-text body — the export runs server-side in a background thread and streams
+        to that path — which is what makes the non-blocking split possible.
+        ``keep_on_server`` mirrors Gigwa's own "keep in my temp-output area" toggle;
+        default False, since an MCP export is normally a one-shot download.
+        """
+        body = self._variant_search_body(
+            variant_set_db_id,
+            reference_name=reference_name,
+            start=start,
+            end=end,
+            min_maf=min_maf,
+            max_maf=max_maf,
+            max_missing_data=max_missing_data,
+            callset_ids=callset_ids,
+            search_mode=SEARCH_MODE_FETCH,
+            page_size=100,
+            page_token="0",
+            get_gt=False,
+        )
+        if selected_variant_types:
+            body["selectedVariantTypes"] = selected_variant_types
+        body["exportFormat"] = fmt
+        body["keepExportOnServer"] = bool(keep_on_server)
+        body["exportedIndividuals"] = list(exported_individuals) if exported_individuals else []
+        body["metadataFields"] = list(metadata_fields) if metadata_fields else []
+
+        resp = self._check(self.request("POST", "/gigwa/exportData", json_body=body), "exportData")
+        export_url = resp.text.strip()
+        if not export_url:
+            raise GigwaAPIError("exportData did not return a download URL.")
+        return export_url
+
+    def download_export(self, export_url: str, dest_path: str | Path) -> Path:
+        """Fetch a completed export from the URL :meth:`start_export` returned, once
+        :meth:`export_progress` reports it complete."""
+        split = urllib.parse.urlsplit(self.config.base_url)
+        origin = f"{split.scheme}://{split.netloc}"
+        download_url = export_url if export_url.startswith("http") else f"{origin}{export_url}"
+        dl = self._check(self._http.get(download_url, headers=self._token_header()), "export download")
+
+        dest_path = Path(dest_path)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(dl.content)
+        return dest_path
+
+    def export_selection(
+        self,
+        variant_set_db_id: str,
+        dest_path: str | Path,
+        *,
+        fmt: str = "VCF",
+        reference_name: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        selected_variant_types: str | None = None,
+        min_maf: float | None = None,
+        max_maf: float | None = None,
+        max_missing_data: float | None = None,
+        callset_ids: Sequence[str] | None = None,
+        exported_individuals: Sequence[str] | None = None,
+        metadata_fields: Sequence[str] | None = None,
+        keep_on_server: bool = False,
+        poll_interval: float = 2.0,
+        timeout: float = 1800.0,
+    ) -> Path:
+        """Export a filtered/selected subset of a variant set and block until it's
+        downloaded — :meth:`start_export`, :meth:`_wait_for_export`, :meth:`download_export`
+        in one call. See :meth:`start_export` for the filter parameters; use that plus
+        :meth:`export_progress`/:meth:`download_export` directly for a non-blocking export.
+        """
+        export_url = self.start_export(
+            variant_set_db_id,
+            fmt=fmt,
+            reference_name=reference_name,
+            start=start,
+            end=end,
+            selected_variant_types=selected_variant_types,
+            min_maf=min_maf,
+            max_maf=max_maf,
+            max_missing_data=max_missing_data,
+            callset_ids=callset_ids,
+            exported_individuals=exported_individuals,
+            metadata_fields=metadata_fields,
+            keep_on_server=keep_on_server,
+        )
+        notify(f"Exporting {fmt} from Gigwa…")
+        self._wait_for_export(poll_interval=poll_interval, timeout=timeout)
+        return self.download_export(export_url, dest_path)
+
     def _available_formats(self, variant_set_db_id: str) -> list[str]:
         """Best-effort list of export formats a variant set advertises (``availableFormats``)."""
         try:
@@ -785,15 +1001,85 @@ class GigwaClient:
         return data if isinstance(data, dict) else {}
 
     # -- germplasm metadata (BrAPI) ---------------------------------------
-    def get_germplasm(self, variant_set_db_id: str) -> list[dict[str, Any]]:
-        """Fetch server-stored germplasm records (per-individual attributes) for a module.
+    def distinct_individual_metadata(
+        self, module: str, *, individuals: Sequence[str] | None = None
+    ) -> dict[str, list[str]]:
+        """Discover per-individual metadata field names and their distinct values.
 
-        Uses BrAPI ``POST /brapi/v2/search/germplasm`` filtered by program/study derived
-        from the module, falling back to the ``GET /brapi/v2/germplasm`` listing. Returns
-        an empty list when the build does not support it (some 2.12 builds 404 attribute
-        endpoints), mirroring the :meth:`list_variantsets` graceful-fallback pattern.
+        ``POST /gigwa/distinctIndividualMetadata/{module}`` -- the endpoint the Gigwa web
+        UI itself uses to populate its "select individuals by attribute" filters. Distinct
+        from (and, on builds where that path returns no ``additionalInfo``, more complete
+        than) the BrAPI germplasm search :meth:`get_germplasm` also tries. ``individuals``
+        optionally restricts value discovery to that subset (default: the whole module).
+        """
+        resp = self._check(
+            self.request(
+                "POST",
+                f"/gigwa/distinctIndividualMetadata/{module}",
+                json_body={"individuals": list(individuals)} if individuals else {},
+            ),
+            "distinctIndividualMetadata",
+        )
+        try:
+            data = resp.json()
+        except ValueError:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {str(k): [str(v) for v in (vs or [])] for k, vs in data.items()}
+
+    def filter_individuals_by_metadata(
+        self, module: str, filters: dict[str, Sequence[str]]
+    ) -> list[dict[str, Any]]:
+        """Return individuals whose metadata matches *filters* (field name -> allowed
+        values; multiple fields AND together, multiple values for one field OR together).
+
+        ``POST /gigwa/filterIndividualsFromMetadata/{module}`` -- the same endpoint behind
+        the Gigwa web UI's "create group from metadata" dialog. Each result is
+        ``{"id": <individual name>, "additionalInfo": {field: value, ...}}``. An empty
+        ``filters`` dict returns every individual with its full metadata (used by
+        :meth:`get_germplasm` as its primary source).
+        """
+        resp = self._check(
+            self.request(
+                "POST",
+                f"/gigwa/filterIndividualsFromMetadata/{module}",
+                json_body={k: list(v) for k, v in filters.items()},
+            ),
+            "filterIndividualsFromMetadata",
+        )
+        try:
+            data = resp.json()
+        except ValueError:
+            return []
+        return data if isinstance(data, list) else []
+
+    def get_germplasm(self, variant_set_db_id: str) -> list[dict[str, Any]]:
+        """Fetch server-stored per-individual metadata for a module, as BrAPI-germplasm-
+        shaped records (``germplasmName``/``germplasmDbId``/``additionalInfo``).
+
+        Tries :meth:`filter_individuals_by_metadata` (Gigwa's native, always-populated
+        metadata endpoint) first, since BrAPI ``search/germplasm`` on some builds returns
+        every individual but with **no** ``additionalInfo`` at all (verified live: the
+        endpoint responds 200 with real records, just none of the custom fields). Falls
+        back to BrAPI ``POST /brapi/v2/search/germplasm`` then ``GET /brapi/v2/germplasm``
+        for builds without the native endpoint. Returns an empty list when nothing works.
         """
         module = variant_set_db_id.split("§", 1)[0]
+        try:
+            native = self.filter_individuals_by_metadata(module, {})
+        except (GigwaAPIError, httpx.HTTPError):
+            native = []
+        if native:
+            return [
+                {
+                    "germplasmName": rec.get("id"),
+                    "germplasmDbId": f"{module}§{rec.get('id')}",
+                    "additionalInfo": rec.get("additionalInfo") or {},
+                }
+                for rec in native
+            ]
+
         for method, path, body in (
             ("POST", "/brapi/v2/search/germplasm", {"programDbIds": [module]}),
             ("GET", "/brapi/v2/germplasm", None),

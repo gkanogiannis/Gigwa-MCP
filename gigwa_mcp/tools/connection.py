@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ..client import GigwaClient
@@ -116,6 +117,13 @@ def _render_summary(summary: dict[str, Any]) -> str:
     ...); each holds scalar fields (``database`` = real name, ``individuals``,
     ``markers``, ``taxon``) plus nested ``ProjectN`` dicts (``name``,
     ``variantType``, ``ploidy``, ``samples``, ``runs``).
+
+    Critically, ``ProjectN``'s numeric ``N`` — not its ``name`` — is the middle
+    ``§``-separated segment of a BrAPI ``variantSetDbId`` (``module§N§run``); the project
+    *name* never appears in that id. Printing each run's exact id here (rather than just
+    the human-readable name) means a caller never has to guess/assemble one by hand from
+    this listing — a wrong guess here fails downstream calls with an opaque HTTP 500
+    rather than a clear "unknown id" error, so getting it right the first time matters.
     """
     if not summary:
         return "The Gigwa instance currently has no databases."
@@ -132,7 +140,11 @@ def _render_summary(summary: dict[str, Any]) -> str:
         if db.get("taxon"):
             meta.append(f"taxon={db['taxon']}")
         lines.append(f"- {name}" + (f" ({', '.join(meta)})" if meta else ""))
-        for proj in (v for v in db.values() if isinstance(v, dict)):
+        for key, proj in db.items():
+            if not (isinstance(proj, dict) and key.lower().startswith("project")):
+                continue
+            m = re.search(r"(\d+)", key)
+            proj_num = m.group(1) if m else "1"
             bits: list[str] = []
             vtype = proj.get("variantType")
             if vtype:
@@ -141,17 +153,24 @@ def _render_summary(summary: dict[str, Any]) -> str:
                 bits.append(f"ploidy {proj['ploidy']}")
             if proj.get("samples") is not None:
                 bits.append(f"{proj['samples']} samples")
-            runs = proj.get("runs") or []
-            if runs:
-                bits.append("runs: " + ", ".join(map(str, runs)))
             pname = proj.get("name", "?")
             lines.append(f"    - project '{pname}'" + (f" — {'; '.join(bits)}" if bits else ""))
+            for run in proj.get("runs") or []:
+                lines.append(f"        variant_set_db_id: {name}§{proj_num}§{run}")
     return "\n".join(lines)
 
 
 @mcp.tool()
 def list_content() -> str:
-    """List the databases, projects and runs currently hosted on the Gigwa server."""
+    """List the databases, projects and runs currently hosted on the Gigwa server.
+
+    Each run's exact ``variant_set_db_id`` is printed alongside it — use that string
+    verbatim in other tools, do not assemble one by hand. In particular, the middle
+    segment is a numeric project index (``1``, ``2``, ...), not the project's name (e.g.
+    project 'refNB' still has id segment '1') — using the name there is a common mistake
+    and fails every downstream call with an opaque HTTP 500 rather than a clear error.
+    ``list_variant_sets`` gives the same ids in a flatter list, if preferred.
+    """
     client = get_client()
     summary = client.instance_content_summary()
     return _render_summary(summary)

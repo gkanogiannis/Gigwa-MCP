@@ -120,6 +120,124 @@ def test_export_data_nonvcf_streams_after_202(tmp_path):
     assert written.read_bytes() == b"X" * 128
 
 
+def test_get_export_formats_parses_registry():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/gigwa/exportFormats")
+        return httpx.Response(200, json={
+            "VCF": {"desc": "Variant Call Format", "supportedPloidyLevels": "",
+                     "supportedVariantTypes": "", "dataFileExtensions": "vcf"},
+            "EIGENSTRAT": {"desc": "SNP-only <a href='x'>alignment</a> format",
+                            "supportedPloidyLevels": "2", "supportedVariantTypes": "SNP",
+                            "dataFileExtensions": "geno;snp;ind"},
+        })
+
+    client = make_client(_token_or(handler))
+    formats = client.get_export_formats()
+    assert set(formats) == {"VCF", "EIGENSTRAT"}
+    assert formats["EIGENSTRAT"]["supportedPloidyLevels"] == "2"
+    assert formats["EIGENSTRAT"]["supportedVariantTypes"] == "SNP"
+
+
+def test_export_selection_posts_filters_polls_and_downloads(tmp_path):
+    calls = {"progress": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/gigwa/exportData"):
+            import json
+
+            body = json.loads(request.read().decode())
+            assert body["variantSetId"] == "MOD§1"
+            assert body["referenceName"] == "chr1"
+            assert body["start"] == 100 and body["end"] == 200
+            assert body["selectedVariantTypes"] == "SNP"
+            assert body["exportFormat"] == "VCF.gz"
+            assert body["keepExportOnServer"] is False
+            assert body["exportedIndividuals"] == ["acc1", "acc2"]
+            assert body["metadataFields"] == ["Country"]
+            assert body["minMaf"] == [5.0]  # 0.05 fraction -> percentage
+            return httpx.Response(200, text="/gigwaV2/tmpOutput/u/abc/out.vcf.gz")
+        if path.endswith("/gigwa/progress"):
+            assert "progressToken" not in request.url.params
+            assert request.headers["authorization"] == "Bearer export_t"
+            calls["progress"] += 1
+            if calls["progress"] < 2:
+                return httpx.Response(200, json={"complete": False, "progressDescription": "working"})
+            return httpx.Response(200, json={"complete": True})
+        if path.endswith("/tmpOutput/u/abc/out.vcf.gz"):
+            assert request.headers["authorization"] == "Bearer t"
+            return httpx.Response(200, content=b"VCFGZDATA")
+        raise AssertionError(f"unexpected path: {path}")
+
+    client = make_client(_token_or(handler))
+    dest = tmp_path / "out.vcf.gz"
+    written = client.export_selection(
+        "MOD§1§run1", dest,
+        fmt="VCF.gz",
+        reference_name="chr1", start=100, end=200,
+        selected_variant_types="SNP",
+        min_maf=0.05,
+        exported_individuals=["acc1", "acc2"],
+        metadata_fields=["Country"],
+        poll_interval=0,
+    )
+    assert written == dest
+    assert dest.read_bytes() == b"VCFGZDATA"
+    assert calls["progress"] == 2
+
+
+def test_export_selection_raises_on_server_error_status():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/gigwa/exportData"):
+            return httpx.Response(200, text="/gigwaV2/tmpOutput/u/abc/out.vcf")
+        if request.url.path.endswith("/gigwa/progress"):
+            return httpx.Response(200, json={"complete": False, "error": "boom"})
+        raise AssertionError("download should not be reached")
+
+    from gigwa_mcp.errors import GigwaExportError
+
+    client = make_client(_token_or(handler))
+    try:
+        client.export_selection("MOD§1§run1", "/tmp/whatever.vcf", poll_interval=0)
+        raise AssertionError("expected GigwaExportError")
+    except GigwaExportError as exc:
+        assert "boom" in str(exc)
+
+
+def test_start_export_returns_url_without_polling():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/gigwa/exportData"):
+            return httpx.Response(200, text="/gigwaV2/ddl_tmpOutput/u/abc/out.vcf")
+        raise AssertionError(f"no polling/download expected, got {request.url.path}")
+
+    client = make_client(_token_or(handler))
+    url = client.start_export("MOD§1§run1", fmt="VCF")
+    assert url == "/gigwaV2/ddl_tmpOutput/u/abc/out.vcf"
+
+
+def test_export_progress_and_download_export_split():
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/gigwa/progress"):
+            assert "progressToken" not in request.url.params
+            assert request.headers["authorization"] == "Bearer export_t"
+            return httpx.Response(204)  # no export running yet
+        if path.endswith("/out.vcf"):
+            return httpx.Response(200, content=b"DATA")
+        raise AssertionError(f"unexpected path: {path}")
+
+    client = make_client(_token_or(handler))
+    assert client.export_progress() is None  # 204 -> nothing running
+
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as d:
+        dest = Path(d) / "out.vcf"
+        written = client.download_export("/gigwaV2/ddl_tmpOutput/u/abc/out.vcf", dest)
+        assert written.read_bytes() == b"DATA"
+
+
 def test_abort_calls_abort_process():
     seen = {}
 
@@ -138,6 +256,8 @@ def test_abort_calls_abort_process():
 
 def test_get_germplasm_falls_back_to_get_listing():
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/gigwa/filterIndividualsFromMetadata/MOD"):
+            return httpx.Response(200, json=[])  # native endpoint unavailable/empty
         if request.method == "POST" and request.url.path.endswith("/search/germplasm"):
             return httpx.Response(404, text="not supported")
         if request.method == "GET" and request.url.path.endswith("/brapi/v2/germplasm"):
@@ -149,3 +269,47 @@ def test_get_germplasm_falls_back_to_get_listing():
     client = make_client(_token_or(handler))
     recs = client.get_germplasm("MOD§1§run1")
     assert recs and recs[0]["germplasmName"] == "acc1"
+
+
+def test_get_germplasm_prefers_native_metadata_endpoint():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/gigwa/filterIndividualsFromMetadata/MOD"):
+            import json
+
+            assert json.loads(request.read().decode()) == {}
+            return httpx.Response(200, json=[{"id": "7", "additionalInfo": {"GroupK4": "cA"}}])
+        raise AssertionError(f"BrAPI fallback should not be reached: {request.url.path}")
+
+    client = make_client(_token_or(handler))
+    recs = client.get_germplasm("MOD§1§run1")
+    assert recs == [{"germplasmName": "7", "germplasmDbId": "MOD§7", "additionalInfo": {"GroupK4": "cA"}}]
+
+
+def test_distinct_individual_metadata_parses_fields():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/gigwa/distinctIndividualMetadata/MOD")
+        return httpx.Response(200, json={"GroupK4": ["cA", "XI", "GJ"], "Country": ["PE", "China"]})
+
+    client = make_client(_token_or(handler))
+    fields = client.distinct_individual_metadata("MOD")
+    assert fields["GroupK4"] == ["cA", "XI", "GJ"]
+    assert fields["Country"] == ["PE", "China"]
+
+
+def test_filter_individuals_by_metadata_sends_filters():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        assert request.url.path.endswith("/gigwa/filterIndividualsFromMetadata/MOD")
+        captured["body"] = json.loads(request.read().decode())
+        return httpx.Response(200, json=[
+            {"id": "21", "additionalInfo": {"GroupK4": "cA"}},
+            {"id": "34", "additionalInfo": {"GroupK4": "cA"}},
+        ])
+
+    client = make_client(_token_or(handler))
+    recs = client.filter_individuals_by_metadata("MOD", {"GroupK4": ["cA"]})
+    assert [r["id"] for r in recs] == ["21", "34"]
+    assert captured["body"] == {"GroupK4": ["cA"]}
