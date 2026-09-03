@@ -109,7 +109,8 @@ never modify the data in Gigwa.
 | `count_variants` | Count variants matching region / MAF / missing-data filters, server-side (no download) |
 | `search_variants` | Search variants server-side and write the matching list (`variant_search.csv`) |
 | `export_genotypes` | Export a variant set to a file — `VCF`/`PLINK`/`Flapjack` (formats vary by build) |
-| `get_germplasm_metadata` | Pull server-stored per-individual attributes (`germplasm_metadata.csv`) |
+| `search_callsets` | Dump per-sample (callset) metadata — names + `additionalInfo` attributes (`sample_metadata.csv`) |
+| `get_germplasm_metadata` | Pull server-stored per-individual attributes (`germplasm_metadata.csv`); falls back to the callset level |
 
 **QC & diversity (read-only)**
 
@@ -487,7 +488,8 @@ args `max_markers` / `method` (`"vcf"` | `"allelematrix"`), and `region`
 | `count_variants` | `reference_name?`, `start?`, `end?`, `min_maf?`, `max_maf?`, `max_missing_data?` | server-side match count (no download) |
 | `search_variants` | same filters as `count_variants`, `max_variants=100000` | `variant_search.csv` (id/chrom/pos/ref/alt) |
 | `export_genotypes` | `output_path`, `format="VCF"` (`PLINK`/`Flapjack`; varies by build) | writes the export file |
-| `get_germplasm_metadata` | `variant_set_db_id` | `germplasm_metadata.csv` (server-stored attributes) |
+| `search_callsets` | `variant_set_db_id` | `sample_metadata.csv` (per-sample attributes) |
+| `get_germplasm_metadata` | `variant_set_db_id` | `germplasm_metadata.csv` (server-stored attributes; callset fallback) |
 
 **QC & diversity** (output files listed in [Output files](#output-files))
 
@@ -604,6 +606,7 @@ Each analysis writes one or more CSVs (Newick for the tree) under
 | `import_quality_scan.csv` | `audit_import_quality` | one row per run: status + diagnostics + reasons |
 | `variant_search.csv` | `search_variants` | matching variants (id, chrom, pos, ref, alt) |
 | `germplasm_metadata.csv` | `get_germplasm_metadata` | server-stored per-individual attributes |
+| `sample_metadata.csv` | `search_callsets` | per-sample (callset) attributes |
 | `dartseq_positions.csv` | `map_dartseq_to_reference` | per-marker chrom/pos/strand/mapq/status |
 
 ## Visualizing results
@@ -804,6 +807,34 @@ statistics against hand-computed values; `test_genotypes.py` exercises VCF parsi
 callset-name mapping with a mock client. The suite needs no live Gigwa server.
 
 ## Changelog
+
+### v1.8.0 — callset-level metadata & richer connection info
+
+- **New `search_callsets` tool.** Dumps a run's per-sample (callset) metadata — the resolved
+  `sample_name`, the server's raw `callSetName`, `sampleDbId`, `callSetDbId`, and every key
+  found across the callsets' `additionalInfo` — to `sample_metadata.csv`. This is the
+  sample-level counterpart to `get_germplasm_metadata`.
+- **`get_germplasm_metadata` falls back to the callset level.** Some instances store passport
+  data on the samples rather than on BrAPI germplasm records, where the tool previously
+  reported "no metadata available" despite every sample carrying a full record (observed on
+  the ICARDA durum-wheat database). It now falls back to the callset level and still writes
+  `germplasm_metadata.csv`, reporting an empty result only when neither level exposes any
+  attribute.
+- **Fallback output joins to the analysis tools.** `germplasm_name` holds the resolved sample
+  name (the same rule `GenotypeMatrix.sample_names` uses) and `germplasm_db_id` the
+  `callSetDbId` (`sample_names`' fallback key), so either column groups samples in
+  `diversity_fst` / `diversity_by_group` without manual renaming. Note `metadata_tsv` expects
+  tab-separated input — convert the CSV first.
+- **Pinned the MCP SDK to the 1.x line (`mcp>=1.27,<2`).** The previous `mcp>=1.27` began
+  resolving to mcp 2.x on 2026-07-28, which renamed `FastMCP` to `MCPServer` and removed
+  `mcp.server.fastmcp` — so a fresh `pip install gigwa-mcp` (and any Docker image rebuild)
+  failed on import. The cap restores installability. Note the 1.x line is in maintenance mode
+  upstream and receives security fixes only; migrating to the v2 SDK is tracked separately.
+
+- **`gigwa_server_info` reports account permissions.** When the build's `userInfo` supplies
+  them, the connection summary now also lists the server-side identity, email, and the
+  databases the account may write to / manage / administer. Builds returning an empty
+  `userInfo` are unaffected — every line is guarded.
 
 ### v1.7.0 — HTTP transport
 

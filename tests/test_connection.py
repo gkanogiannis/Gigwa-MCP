@@ -112,3 +112,75 @@ def test_gigwa_connect_uses_profile_credentials(monkeypatch):
     assert "User: bob" in out
     # The password reached Gigwa via generateToken, resolved from env — not a tool arg.
     assert '"bob"' in seen["creds"] and '"pw"' in seen["creds"]
+
+
+# -- _render_user_info ------------------------------------------------------
+
+def test_render_user_info_is_empty_for_builds_that_report_nothing():
+    """Builds returning an empty/absent userInfo must add no lines at all."""
+    assert connection._render_user_info({}, "alice") == []
+    assert connection._render_user_info(None, "alice") == []
+    assert connection._render_user_info([], "alice") == []
+
+
+def test_render_user_info_reports_identity_only_when_it_adds_information():
+    # Same as the configured user -> redundant, omitted.
+    assert connection._render_user_info({"user": "alice"}, "alice") == []
+    # Different (or unknown locally, e.g. anonymous) -> worth showing.
+    assert connection._render_user_info({"user": "alice"}, "bob") == ["Server identity: alice"]
+    assert connection._render_user_info({"login": "alice"}, None) == ["Server identity: alice"]
+
+
+@pytest.mark.parametrize("key", ["authorities", "roles", "permissions"])
+def test_render_user_info_renders_roles_under_any_key(key):
+    lines = connection._render_user_info({key: ["ROLE_ADMIN", "ROLE_USER"]}, None)
+    assert lines == ["Roles: ROLE_ADMIN, ROLE_USER"]
+
+
+def test_render_user_info_renders_email_permissions_and_admin_flag():
+    lines = connection._render_user_info(
+        {
+            "user": "alice",
+            "email": "alice@example.org",
+            "authorities": ["ROLE_ADMIN"],
+            "writableEntities": ["db1", "db2"],
+            "manageableEntities": ["db1"],
+            "adminEntities": ["db1"],
+            "administrator": True,
+        },
+        "alice",
+    )
+    assert lines == [
+        "Email: alice@example.org",
+        "Roles: ROLE_ADMIN",
+        "Writable databases: db1, db2",
+        "Manageable databases: db1",
+        "Admin databases: db1",
+        "Administrator: yes",
+    ]
+
+
+def test_render_user_info_truncates_long_database_lists():
+    lines = connection._render_user_info({"writableEntities": [f"db{i}" for i in range(12)]}, None)
+    assert lines == ["Writable databases: db0, db1, db2, db3, db4, db5, db6, db7, db8, db9 …"]
+
+
+def test_render_user_info_accepts_the_admin_alias():
+    assert connection._render_user_info({"admin": True}, None) == ["Administrator: yes"]
+    # Falsy flags stay silent rather than reporting "no".
+    assert connection._render_user_info({"administrator": False, "admin": False}, None) == []
+
+
+def test_server_info_surfaces_user_info_lines():
+    """End-to-end: a populated userInfo reaches the gigwa_server_info summary."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/userInfo"):
+            return httpx.Response(
+                200, json={"authorities": ["ROLE_ADMIN"], "writableEntities": ["demo"]}
+            )
+        return _healthy(request)
+
+    out = connection._verify_and_describe(_mock_client(handler))
+
+    assert "Roles: ROLE_ADMIN" in out
+    assert "Writable databases: demo" in out

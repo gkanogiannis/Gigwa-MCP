@@ -297,6 +297,9 @@ TOOL_CATALOG: dict[str, ToolInfo] = {
     "get_germplasm_metadata": ToolInfo(
         "Metadata", "Fetch server-stored per-individual (germplasm) attributes.",
         _RETRIEVE, _T_GENOPHENO),
+    "search_callsets": ToolInfo(
+        "Metadata", "Dump per-sample (callset) metadata: names + additionalInfo attributes.",
+        _RETRIEVE, _T_GENOPHENO),
     # -- Variant search --
     "count_variants": ToolInfo(
         "Variant search", "Count variants matching region/MAF/missing filters, server-side.",

@@ -28,6 +28,19 @@ MODULE§project§run          (§ = section sign, U+00A7)
 - The variant and call-set counts reported by `list_variant_sets()` come from the server's
   BrAPI/GA4GH endpoints and tell you the shape (markers × samples) of each run.
 
+## Where per-individual metadata lives
+
+Passport/trait attributes sit at one of two levels depending on how the instance was
+populated, so check both before concluding a run has none:
+
+- **germplasm (accession) level** — `get_germplasm_metadata()`, the usual case.
+- **call set (sample) level** — `search_callsets()`, where the attributes hang off each
+  callset's `additionalInfo`. Some instances populate only this level.
+
+`get_germplasm_metadata()` tries the germplasm level first and falls back to the callset
+level automatically, so it is the right first call either way; use `search_callsets()` when
+you specifically want the sample-level dump with the server's raw callset labels.
+
 ## Complementary discovery: MCP resources
 
 Besides the tools, the `gigwa-mcp` server exposes two **resources** (network-free):

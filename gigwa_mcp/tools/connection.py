@@ -29,15 +29,44 @@ def _verify_and_describe(client: GigwaClient) -> str:
         lines += ["User: (anonymous)", "Authentication: anonymous (public/read-only access)"]
     else:
         lines += [f"User: {client.config.username}", "Authentication: OK"]
-    # Best-effort: report server-side user identity / roles when the build supports it.
-    info = client.user_info()
-    if info:
-        roles = info.get("authorities") or info.get("roles") or info.get("permissions")
-        if isinstance(roles, (list, tuple)) and roles:
-            lines.append("Roles: " + ", ".join(str(r) for r in roles))
-        if info.get("administrator") or info.get("admin"):
-            lines.append("Administrator: yes")
+    # Best-effort: report server-side user identity / roles / permissions when the build
+    # supports it. Every line below is guarded, so a build that returns an empty userInfo
+    # (e.g. the ICARDA 2.8 instance) adds nothing here and the summary is unchanged.
+    lines += _render_user_info(client.user_info(), client.config.username)
     return "\n".join(lines)
+
+
+def _render_user_info(info: dict[str, Any], configured_user: str | None) -> list[str]:
+    """Render the server-side ``/gigwa/userInfo`` payload as summary lines.
+
+    Returns ``[]`` for an empty/missing payload. Surfaces, when present: the server's own
+    identity for the session (only when it adds information beyond the configured username),
+    email, roles/authorities, the databases the account may write to / administer, and an
+    administrator flag. All lookups are guarded so unknown builds simply contribute nothing.
+    """
+    if not isinstance(info, dict) or not info:
+        return []
+    out: list[str] = []
+    login = info.get("user") or info.get("username") or info.get("login") or info.get("name")
+    if login and str(login) != (configured_user or ""):
+        out.append(f"Server identity: {login}")
+    if info.get("email"):
+        out.append(f"Email: {info['email']}")
+    roles = info.get("authorities") or info.get("roles") or info.get("permissions")
+    if isinstance(roles, (list, tuple)) and roles:
+        out.append("Roles: " + ", ".join(str(r) for r in roles))
+    # Databases this account may write to / administer, when the build reports them.
+    for key, label in (
+        ("writableEntities", "Writable databases"),
+        ("manageableEntities", "Manageable databases"),
+        ("adminEntities", "Admin databases"),
+    ):
+        val = info.get(key)
+        if isinstance(val, (list, tuple)) and val:
+            out.append(f"{label}: " + ", ".join(map(str, val[:10])) + (" …" if len(val) > 10 else ""))
+    if info.get("administrator") or info.get("admin"):
+        out.append("Administrator: yes")
+    return out
 
 
 @mcp.tool()
