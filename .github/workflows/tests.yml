@@ -1,0 +1,38 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install -e ".[dev]"
+      - run: pytest -q
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t gigwa-mcp:test .
+      - name: Verify image defaults and entrypoint stream separation
+        run: |
+          docker inspect gigwa-mcp:test --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -q '^GIGWA_MCP_HOST=0.0.0.0$'
+          if docker inspect gigwa-mcp:test --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -q '^GIGWA_MCP_PORT='; then
+            echo 'image must not set GIGWA_MCP_PORT by default' >&2
+            exit 1
+          fi
+          grep -q 'STDIO mode" >&2' entrypoint.sh

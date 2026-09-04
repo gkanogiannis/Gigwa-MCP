@@ -15,7 +15,6 @@ import functools
 import inspect
 import json
 from dataclasses import dataclass
-from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Callable
 
 import anyio
@@ -24,12 +23,8 @@ from mcp.server.mcpserver import Context, MCPServer
 
 from .client import GigwaClient
 from .config import GigwaConfig
+from . import __version__
 from .progress import reset_reporter, set_reporter
-
-try:
-    __version__ = version("gigwa-mcp")
-except PackageNotFoundError:  # running from a source tree without an install
-    __version__ = "0.0.0"
 
 # ``version`` reaches the MCP serverInfo, so clients and registries report gigwa-mcp's
 # version rather than the mcp SDK's. The StreamableHTTP transport mounts at /mcp, which is
@@ -416,7 +411,7 @@ _PARAM_DESCRIPTIONS: dict[str, str] = {
     "anonymous": "Connect without credentials (Gigwa's anonymous public/read-only access).",
     "variant_set_db_id": "BrAPI variantSetDbId identifying the run (MODULE§project§run) -- copy the exact string from list_variant_sets / list_content, never assemble one by hand: the middle segment is a numeric project index, not the project's name, and a wrong guess fails with an opaque HTTP 500 rather than a clear error.",
     "method": "Genotype source: 'vcf' (full export, cached) or 'allelematrix' (paged, server-side subset).",
-    "max_markers": "Cap the number of markers analysed (evenly-spaced subsample); omit to use all.",
+    "max_markers": "Cap analysis to the first N markers in canonical Gigwa search order; omit to use all.",
     "max_samples": "Cap the number of samples/callsets sampled (allelematrix path).",
     "region": "Restrict analysis to a genomic window: 'chrom' or 'chrom:start-end' (1-based).",
     "output_dir": "Directory for the output CSV(s) (default ./gigwa_results/<module>/).",

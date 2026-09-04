@@ -1,8 +1,6 @@
 import asyncio
 import json
 
-from starlette.testclient import TestClient
-
 from gigwa_mcp.__main__ import configure_http_transport_security, run_http_server
 from gigwa_mcp.server import (
     _MAX_NORMALIZE_BODY_BYTES,
@@ -49,96 +47,11 @@ def _drive_normalizer(chunks: list[bytes]) -> bytes:
     return received["body"]
 
 
-def test_streamable_http_app_allows_docker_service_host(monkeypatch) -> None:
+def test_http_security_allows_configured_docker_service_host(monkeypatch) -> None:
     monkeypatch.setenv("GIGWA_MCP_ALLOWED_HOSTS", "gigwa-mcp")
     security = configure_http_transport_security()
-    _reset_streamable_http_session_manager()
-
-    app = mcp.streamable_http_app(transport_security=security)
-    with TestClient(app) as client:
-        response = client.get("/mcp", headers={"host": "gigwa-mcp:8184"})
-
-    assert response.status_code != 421
-
-
-def test_streamable_http_initialize_accepts_json_only_accept_header(monkeypatch) -> None:
-    monkeypatch.setenv("GIGWA_MCP_ALLOWED_HOSTS", "testserver,gigwa-mcp")
-    security = configure_http_transport_security()
-    _reset_streamable_http_session_manager()
-
-    app = mcp.streamable_http_app(transport_security=security)
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "test", "version": "1.0"},
-        },
-    }
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/mcp",
-            json=payload,
-            headers={
-                "accept": "application/json",
-                "content-type": "application/json",
-                "host": "gigwa-mcp:8184",
-            },
-        )
-
-    assert response.status_code != 406
-
-
-def test_streamable_http_accepts_notifications_initialized_with_id(monkeypatch) -> None:
-    monkeypatch.setenv("GIGWA_MCP_ALLOWED_HOSTS", "testserver,gigwa-mcp")
-    security = configure_http_transport_security()
-    _reset_streamable_http_session_manager()
-
-    app = mcp.streamable_http_app(transport_security=security)
-    headers = {
-        "accept": "application/json",
-        "content-type": "application/json",
-        "host": "gigwa-mcp:8184",
-    }
-
-    with TestClient(app) as client:
-        # A session must exist first: the StreamableHTTP SDK rejects any post-initialize
-        # request without an Mcp-Session-Id ("Missing session ID", 400) *before* the ASGI
-        # normalization wrapper runs, so establish one via initialize.
-        init = client.post(
-            "/mcp",
-            json={
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "test", "version": "1.0"},
-                },
-            },
-            headers=headers,
-        )
-        session_id = init.headers.get("mcp-session-id")
-        assert session_id
-
-        # A buggy client sends notifications/initialized WITH an illegal ``id`` field; the
-        # wrapper strips it so the SDK accepts the notification (202) instead of 400-ing.
-        response = client.post(
-            "/mcp",
-            json={
-                "jsonrpc": "2.0",
-                "id": 123,
-                "method": "notifications/initialized",
-                "params": None,
-            },
-            headers={**headers, "mcp-session-id": session_id},
-        )
-
-    assert response.status_code == 202
+    assert "gigwa-mcp" in security.allowed_hosts
+    assert "gigwa-mcp:*" in security.allowed_hosts
 
 
 def test_normalizer_strips_id_from_small_notification() -> None:

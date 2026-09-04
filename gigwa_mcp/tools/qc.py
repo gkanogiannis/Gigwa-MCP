@@ -172,7 +172,7 @@ def qc_duplicate_accessions(
     Computes IBS allele-sharing similarity between every pair of samples and groups
     pairs at or above ``similarity_threshold`` into duplicate sets — the core
     genebank "cleaning" check for mislabelled duplicates and clones. By default
-    subsamples to ``max_markers`` evenly-spaced markers for speed (set to 0/None to
+    subsamples to the first ``max_markers`` in canonical Gigwa search order for speed (set to 0/None to
     use all). Writes ``duplicate_pairs.csv`` and ``duplicate_groups.csv``. For large
     sets pass ``method="allelematrix"`` to fetch the marker subset without a full export.
     """

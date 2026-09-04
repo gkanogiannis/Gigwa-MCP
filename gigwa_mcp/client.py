@@ -12,8 +12,8 @@ Verified against Gigwa 2.12-RELEASE:
 - ``GET /gigwa/progress?progressToken=...`` returns a JSON status object, or
   HTTP 204 when there is nothing to report.
 - ``POST /gigwa/exportData`` (the endpoint the Gigwa web UI itself uses for a
-  filtered/selection-based export) returns the eventual download URL as plain text
-  immediately, while the export runs server-side; its progress is polled via
+  filtered/selection-based export) may return an eventual download URL or the completed
+  file itself, depending on the Gigwa build; URL-based progress is polled via
   ``GET /gigwa/progress`` with **no** ``progressToken`` param and an ``Authorization:
   Bearer export_<token>`` header instead (see ``GigwaClient._export_progress``).
 - ``POST /gigwa/distinctIndividualMetadata/{module}`` and
@@ -35,6 +35,7 @@ import httpx
 
 from .config import GigwaConfig
 from .errors import GigwaAPIError, GigwaAuthError, GigwaExportError, GigwaImportError
+from .exports import ExportSelection, ExportService, ExportStartResult
 from .progress import notify
 
 
@@ -104,6 +105,7 @@ class GigwaClient:
         self.config = config
         self.rest = config.rest_url
         self._token: str | None = None
+        self.exports = ExportService(self)
         # Bound *connection* establishment separately from the (long) read timeout: reads
         # can legitimately take minutes (VCF export / import), but connecting should be
         # quick. This makes an unreachable/misconfigured Gigwa fail in a few seconds
@@ -513,6 +515,7 @@ class GigwaClient:
         callset_page: int = 0,
         callset_page_size: int = 100000,
         data_matrix_abbreviations: Sequence[str] = ("GT",),
+        variant_db_ids: Sequence[str] | None = None,
     ) -> dict[str, Any]:
         """Fetch one page of the genotype matrix via BrAPI ``search/allelematrix``.
 
@@ -531,6 +534,8 @@ class GigwaClient:
                 {"dimension": "callsets", "page": callset_page, "pageSize": callset_page_size},
             ],
         }
+        if variant_db_ids:
+            body["variantDbIds"] = list(variant_db_ids)
         resp = self._check(
             self.request("POST", "/brapi/v2/search/allelematrix", json_body=body),
             "search/allelematrix",
@@ -860,9 +865,10 @@ class GigwaClient:
         exported_individuals: Sequence[str] | None = None,
         metadata_fields: Sequence[str] | None = None,
         keep_on_server: bool = False,
-    ) -> str:
-        """Kick off a filtered/selected export and return its eventual download URL
-        immediately, *without* waiting for the export to finish — the non-blocking half of
+        immediate_dest_path: str | Path | None = None,
+    ) -> str | Path:
+        """Kick off a filtered/selected export and return its URL or completed path
+        immediately — the non-blocking half of
         :meth:`export_selection` (which POSTs this, waits via :meth:`export_progress`, then
         downloads). Pair with :meth:`export_progress` to poll status and
         :meth:`download_export` to retrieve the file once complete.
@@ -876,38 +882,43 @@ class GigwaClient:
         export-handler registry — including ``"VCF.gz"`` (bgzipped VCF), which is its own
         registered format, not a flag on plain ``"VCF"``.
 
-        ``POST /gigwa/exportData`` itself returns immediately with this URL as a
-        plain-text body — the export runs server-side in a background thread and streams
-        to that path — which is what makes the non-blocking split possible.
+        ``POST /gigwa/exportData`` may return a plain-text URL while the export runs, or
+        return the completed file body immediately on older/differently configured builds.
+        Pass ``immediate_dest_path`` to support the latter response.
         ``keep_on_server`` mirrors Gigwa's own "keep in my temp-output area" toggle;
         default False, since an MCP export is normally a one-shot download.
         """
-        body = self._variant_search_body(
+        result = self.start_export_result(
             variant_set_db_id,
-            reference_name=reference_name,
-            start=start,
-            end=end,
-            min_maf=min_maf,
-            max_maf=max_maf,
-            max_missing_data=max_missing_data,
-            callset_ids=callset_ids,
-            search_mode=SEARCH_MODE_FETCH,
-            page_size=100,
-            page_token="0",
-            get_gt=False,
+            selection=ExportSelection(
+                fmt=fmt,
+                reference_name=reference_name,
+                start=start,
+                end=end,
+                selected_variant_types=selected_variant_types,
+                min_maf=min_maf,
+                max_maf=max_maf,
+                max_missing_data=max_missing_data,
+                callset_ids=callset_ids,
+                exported_individuals=exported_individuals,
+                metadata_fields=metadata_fields,
+                keep_on_server=keep_on_server,
+            ),
+            immediate_dest_path=immediate_dest_path,
         )
-        if selected_variant_types:
-            body["selectedVariantTypes"] = selected_variant_types
-        body["exportFormat"] = fmt
-        body["keepExportOnServer"] = bool(keep_on_server)
-        body["exportedIndividuals"] = list(exported_individuals) if exported_individuals else []
-        body["metadataFields"] = list(metadata_fields) if metadata_fields else []
+        return result.completed_path or result.download_url or ""
 
-        resp = self._check(self.request("POST", "/gigwa/exportData", json_body=body), "exportData")
-        export_url = resp.text.strip()
-        if not export_url:
-            raise GigwaAPIError("exportData did not return a download URL.")
-        return export_url
+    def start_export_result(
+        self,
+        variant_set_db_id: str,
+        *,
+        selection: ExportSelection,
+        immediate_dest_path: str | Path | None = None,
+    ) -> ExportStartResult:
+        """Start a selection export and retain whether it returned a URL or file bytes."""
+        return self.exports.start(
+            variant_set_db_id, selection, immediate_dest_path=immediate_dest_path
+        )
 
     def download_export(self, export_url: str, dest_path: str | Path) -> Path:
         """Fetch a completed export from the URL :meth:`start_export` returned, once
@@ -919,25 +930,7 @@ class GigwaClient:
         whatever host the URL names. :meth:`start_export` only ever returns a same-origin URL,
         so nothing legitimate is rejected.
         """
-        split = urllib.parse.urlsplit(self.config.base_url)
-        origin = f"{split.scheme}://{split.netloc}"
-        parsed = urllib.parse.urlsplit(export_url)
-        if parsed.scheme or parsed.netloc:
-            if (parsed.scheme, parsed.netloc) != (split.scheme, split.netloc):
-                raise GigwaExportError(
-                    f"Refusing to download an export from '{parsed.scheme}://{parsed.netloc}': "
-                    f"it is not the configured Gigwa server ({origin}). The download URL must "
-                    "be the one export_genotypes(wait=False) returned."
-                )
-            download_url = export_url
-        else:
-            download_url = f"{origin}{export_url}"
-        dl = self._check(self._http.get(download_url, headers=self._token_header()), "export download")
-
-        dest_path = Path(dest_path)
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        dest_path.write_bytes(dl.content)
-        return dest_path
+        return self.exports.download(export_url, dest_path)
 
     def export_selection(
         self,
@@ -964,8 +957,7 @@ class GigwaClient:
         in one call. See :meth:`start_export` for the filter parameters; use that plus
         :meth:`export_progress`/:meth:`download_export` directly for a non-blocking export.
         """
-        export_url = self.start_export(
-            variant_set_db_id,
+        selection = ExportSelection(
             fmt=fmt,
             reference_name=reference_name,
             start=start,
@@ -979,9 +971,13 @@ class GigwaClient:
             metadata_fields=metadata_fields,
             keep_on_server=keep_on_server,
         )
-        notify(f"Exporting {fmt} from Gigwa…")
-        self._wait_for_export(poll_interval=poll_interval, timeout=timeout)
-        return self.download_export(export_url, dest_path)
+        return self.exports.export_and_wait(
+            variant_set_db_id,
+            dest_path,
+            selection,
+            poll_interval=poll_interval,
+            timeout=timeout,
+        )
 
     def _available_formats(self, variant_set_db_id: str) -> list[str]:
         """Best-effort list of export formats a variant set advertises (``availableFormats``)."""

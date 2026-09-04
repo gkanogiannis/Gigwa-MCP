@@ -215,6 +215,48 @@ def test_start_export_returns_url_without_polling():
     assert url == "/gigwaV2/ddl_tmpOutput/u/abc/out.vcf"
 
 
+def test_start_export_saves_immediate_binary_response(tmp_path):
+    payload = b"PK\x03\x04completed export"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/gigwa/exportData"):
+            return httpx.Response(200, content=payload, headers={"content-type": "application/zip"})
+        raise AssertionError(f"no polling/download expected, got {request.url.path}")
+
+    client = make_client(_token_or(handler))
+    dest = tmp_path / "out.zip"
+    result = client.start_export("MOD§1§run1", fmt="VCF", immediate_dest_path=dest)
+    assert result == dest
+    assert dest.read_bytes() == payload
+
+
+def test_start_export_rejects_binary_without_destination():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/gigwa/exportData"):
+            return httpx.Response(200, content=b"PK\x03\x04data", headers={"content-type": "application/zip"})
+        raise AssertionError(request.url.path)
+
+    import pytest
+    from gigwa_mcp.errors import GigwaExportError
+
+    with pytest.raises(GigwaExportError, match="provide a destination"):
+        make_client(_token_or(handler)).start_export("MOD§1§run1")
+
+
+def test_export_selection_skips_poll_when_response_is_file(tmp_path):
+    payload = b"PK\x03\x04complete"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/gigwa/exportData"):
+            return httpx.Response(200, content=payload, headers={"content-disposition": "attachment"})
+        raise AssertionError(f"progress/download must be skipped, got {request.url.path}")
+
+    client = make_client(_token_or(handler))
+    dest = tmp_path / "out.zip"
+    assert client.export_selection("MOD§1§run1", dest) == dest
+    assert dest.read_bytes() == payload
+
+
 def test_export_progress_and_download_export_split():
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path

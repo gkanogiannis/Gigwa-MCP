@@ -26,6 +26,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${{ inputs.tag }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "tag must use x.y.z format" >&2
+            exit 1
+          }
+          project_version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          [[ "$project_version" == "${{ inputs.tag }}" ]] || {
+            echo "input tag ${{ inputs.tag }} does not match pyproject.toml version $project_version" >&2
+            exit 1
+          }
+
       - name: Set up QEMU  # emulation for cross-building arm64 on amd64 runners
         uses: docker/setup-qemu-action@v3
 
@@ -40,6 +54,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -53,3 +68,12 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Verify version and latest resolve to the pushed image
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_digest=$(docker buildx imagetools inspect "${IMAGE}:${{ inputs.tag }}" --format '{{.Manifest.Digest}}')
+          latest_digest=$(docker buildx imagetools inspect "${IMAGE}:latest" --format '{{.Manifest.Digest}}')
+          [[ "$version_digest" == "${{ steps.build.outputs.digest }}" ]]
+          [[ "$latest_digest" == "$version_digest" ]]

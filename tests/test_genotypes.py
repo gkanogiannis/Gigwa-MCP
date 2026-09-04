@@ -88,6 +88,7 @@ def test_subsample_markers(tmp_path):
     sub = gm.subsample_markers(1)
     assert sub.n_variants == 1
     assert sub.n_samples == 2
+    assert list(sub.variant_ids) == ["m1"]
 
 
 def test_parse_region():
@@ -139,9 +140,17 @@ class FakeAMClient:
 
     def search_allelematrix(self, vs, *, variant_page=0, variant_page_size=5000,
                             callset_page=0, callset_page_size=100000,
-                            data_matrix_abbreviations=("GT",)):
+                            data_matrix_abbreviations=("GT",), variant_db_ids=None):
         self.calls += 1
         vids, matrix = self._PAGES[variant_page]
+        if variant_db_ids:
+            wanted = {value.split("§", 1)[-1] for value in variant_db_ids}
+            pairs = [
+                (vid, row) for vid, row in zip(vids, matrix)
+                if vid.split("§", 1)[-1] in wanted
+            ]
+            vids = [pair[0] for pair in pairs]
+            matrix = [pair[1] for pair in pairs]
         return {
             "callSetDbIds": ["S1", "S2", "S3"],
             "variantDbIds": vids,
@@ -157,6 +166,13 @@ class FakeAMClient:
 
     def search_callsets(self, vs):
         return [{"callSetDbId": f"S{i}", "callSetName": f"acc{i}"} for i in (1, 2, 3)]
+
+    def search_variants(self, vs, **kwargs):
+        ids = [variant for variants, _ in self._PAGES.values() for variant in variants]
+        return [
+            {"id": f"VS§1§{variant.split('§', 1)[-1]}"}
+            for variant in ids[: kwargs["max_variants"]]
+        ]
 
 
 def test_load_via_allelematrix():
@@ -175,6 +191,7 @@ def test_load_via_allelematrix():
 def test_allelematrix_max_markers_caps_pages():
     gm = load_genotypes(FakeAMClient(), "VS§1§run", method="allelematrix", max_markers=2)
     assert gm.n_variants == 2  # only the first variant page pulled
+    assert list(gm.variant_ids) == ["chr1§100", "chr1§200"]
 
 
 def test_allelematrix_is_session_cached():

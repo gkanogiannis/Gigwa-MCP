@@ -218,6 +218,17 @@ def test_germplasm_metadata_joins_multi_sample_individuals_with_a_separator(monk
     assert df["sample_name"].tolist() == ["1;2"]
 
 
+def test_germplasm_metadata_preserves_hyphenated_individual(monkeypatch, tmp_path):
+    callsets = [{
+        "callSetDbId": "WD§9", "callSetName": "ACC-WEST-1-Run1", "sampleDbId": "WD§9"
+    }]
+    records = [{"germplasmName": "ACC-WEST", "germplasmDbId": "G9",
+                "additionalInfo": {"Country": "SYR"}}]
+    _patch(monkeypatch, FakeClient(germplasm=records, callsets=callsets))
+    _fn(metadata.get_germplasm_metadata)(ICARDA_VS, output_dir=str(tmp_path))
+    assert _read(tmp_path, "germplasm_metadata.csv")["sample_name"].tolist() == ["9"]
+
+
 def test_germplasm_metadata_still_writes_when_callsets_are_unreadable(monkeypatch, tmp_path):
     """The bridge is best-effort: a callset error must not lose the metadata itself."""
     class NoCallsets(FakeClient):

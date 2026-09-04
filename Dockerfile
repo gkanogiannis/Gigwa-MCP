@@ -6,7 +6,7 @@
 #   docker run -i --rm -e GIGWA_URL -e GIGWA_USER -e GIGWA_PASS -v "$PWD:/data" gigwa-mcp
 #
 # HTTP transport (expose port, e.g. 8184):
-#   docker run -d --rm -p 8184:8184 -e GIGWA_URL -e GIGWA_USER -e GIGWA_PASS gigwa-mcp
+#   docker run -d --rm -p 8184:8184 -e GIGWA_MCP_PORT=8184 -e GIGWA_URL -e GIGWA_USER -e GIGWA_PASS gigwa-mcp
 #   # or with custom port:
 #   docker run -d --rm -p 9000:9000 -e GIGWA_MCP_PORT=9000 -e GIGWA_URL -e GIGWA_USER -e GIGWA_PASS gigwa-mcp
 #
@@ -58,8 +58,6 @@ RUN useradd --create-home --uid 1000 gigwa \
 USER gigwa
 WORKDIR /data
 
-# Default port for HTTP transport (can be overridden via -e GIGWA_MCP_PORT)
-ENV GIGWA_MCP_PORT=8184
 # Bind all interfaces inside the container so the published port is reachable. The server
 # itself defaults to loopback (127.0.0.1) for safety; the container opts into 0.0.0.0 here.
 ENV GIGWA_MCP_HOST=0.0.0.0

@@ -16,7 +16,7 @@ from __future__ import annotations
 import contextvars
 from typing import Any, Awaitable, Callable, Protocol
 
-import anyio
+from anyio import from_thread
 
 
 class _Reporter(Protocol):
@@ -53,6 +53,6 @@ def notify(message: str, progress: float | None = None, total: float | None = No
     try:
         # We run inside an AnyIO worker thread (see progress_tool); hop back to the event
         # loop to await the async report_progress there.
-        anyio.from_thread.run(reporter, float(progress or 0.0), total, message)
+        from_thread.run(reporter, float(progress or 0.0), total, message)
     except Exception:  # noqa: BLE001 - progress is best-effort
         pass

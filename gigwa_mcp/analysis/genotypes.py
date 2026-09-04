@@ -23,6 +23,8 @@ import numpy as np
 
 from ..client import GigwaClient
 from ..errors import GigwaAPIError, GigwaError
+from ..identifiers import accession_name as _accession_name
+from ..identifiers import module_of, sample_name_map as _name_map
 from ..progress import notify
 
 # In-process cache of the full (un-subsampled) VCF-path matrix, keyed by variantSetDbId.
@@ -36,47 +38,6 @@ _AM_SESSION_CACHE: dict[tuple, "GenotypeMatrix"] = {}
 
 def _safe_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_") or "gigwa"
-
-
-def module_of(variant_set_db_id: str) -> str:
-    """Database/module name is the first ``§``-separated segment of the id."""
-    return variant_set_db_id.split("§", 1)[0]
-
-
-def _accession_name(sample_db_id: str | None, variant_set_db_id: str) -> str | None:
-    """Recover the accession/individual name from a Gigwa ``sampleDbId``.
-
-    Gigwa labels callsets with a meaningless numeric index (``callSetName`` = "1", "2",
-    …), but encodes the real individual name in ``sampleDbId`` as
-    ``<module>§<individual>-<project>-<run>``. Stripping the module prefix and the
-    trailing ``-<project>-<run>`` recovers the name the user knows the accession by —
-    essential for matching a metadata TSV in the grouping tools.
-    """
-    if not sample_db_id:
-        return None
-    s = str(sample_db_id)
-    body = s.split("§", 1)[1] if "§" in s else s
-    parts = str(variant_set_db_id).split("§")
-    if len(parts) == 3:
-        suffix = f"-{parts[1]}-{parts[2]}"
-        if body.endswith(suffix) and len(body) > len(suffix):
-            body = body[: -len(suffix)]
-    return body or None
-
-
-def _name_map(callsets: list[dict], variant_set_db_id: str) -> dict[str, str]:
-    """Map callSetDbId -> best human name (accession from sampleDbId, else callSetName)."""
-    out: dict[str, str] = {}
-    for cs in callsets:
-        cid = cs.get("callSetDbId")
-        if cid is None:
-            continue
-        out[cid] = (
-            _accession_name(cs.get("sampleDbId"), variant_set_db_id)
-            or cs.get("callSetName")
-            or cid
-        )
-    return out
 
 
 def _callsets(client: GigwaClient, variant_set_db_id: str) -> list[dict]:
@@ -130,9 +91,9 @@ class GenotypeMatrix:
     def subsample_markers(self, max_markers: int) -> "GenotypeMatrix":
         if self.n_variants <= max_markers:
             return self
-        # Evenly spaced indices -> reproducible, spread across the genome/report.
-        idx = np.linspace(0, self.n_variants - 1, max_markers).astype(int)
-        idx = np.unique(idx)
+        # Match the paged allele-matrix backend: a cap always means the deterministic
+        # leading N markers in the backend's stable variant order.
+        idx = np.arange(max_markers)
         return GenotypeMatrix(
             gt=allel.GenotypeArray(self.gt[idx]),
             variant_ids=self.variant_ids[idx],
@@ -256,6 +217,63 @@ def _parse_variant_coords(variant_ids: list[str]) -> tuple[np.ndarray, np.ndarra
     return np.asarray(chrom), np.asarray(pos, dtype=int)
 
 
+def _ga4gh_variant_id(value: object) -> str:
+    """Strip GA4GH's module/project prefix from a variant identifier."""
+    return str(value).split("§", 2)[-1]
+
+
+def _brapi_variant_id(value: object) -> str:
+    """Strip BrAPI's module prefix while retaining structured marker identifiers."""
+    text = str(value)
+    return text.split("§", 1)[1] if "§" in text else text
+
+
+def _canonical_variant_ids(
+    client: GigwaClient, variant_set_db_id: str, max_markers: int, region: str | None
+) -> list[str]:
+    """Select the first N IDs in Gigwa's GA4GH search order for either backend."""
+    reference_name = start = end = None
+    if region:
+        reference_name, start, end = parse_region(region)
+    variants = client.search_variants(
+        variant_set_db_id,
+        reference_name=reference_name,
+        start=start,
+        end=end,
+        max_variants=max_markers,
+        page_size=min(max_markers, 1000),
+    )
+    return [
+        _ga4gh_variant_id(item.get("variantDbId") or item.get("id"))
+        for item in variants
+        if item.get("variantDbId") or item.get("id")
+    ]
+
+
+def _select_variant_ids(gm: GenotypeMatrix, selected_ids: list[str]) -> GenotypeMatrix:
+    positions = {str(variant_id): i for i, variant_id in enumerate(gm.variant_ids)}
+    missing = [value for value in selected_ids if value not in positions]
+    if missing:
+        raise GigwaError(
+            f"{len(missing)} of {len(selected_ids)} canonical capped markers were absent "
+            f"from the loaded backend (for example {missing[0]})."
+        )
+    indices = np.asarray(
+        [positions[value] for value in selected_ids if value in positions], dtype=int
+    )
+    return GenotypeMatrix(
+        gt=allel.GenotypeArray(gm.gt[indices]),
+        variant_ids=gm.variant_ids[indices],
+        chrom=gm.chrom[indices],
+        pos=gm.pos[indices],
+        sample_ids=gm.sample_ids,
+        sample_names=gm.sample_names,
+        variant_set_db_id=gm.variant_set_db_id,
+        depth_present=gm.depth_present,
+        depth_all_zero=gm.depth_all_zero,
+    )
+
+
 def _load_via_allelematrix(
     client: GigwaClient,
     variant_set_db_id: str,
@@ -264,6 +282,7 @@ def _load_via_allelematrix(
     max_samples: int | None = None,
     with_depth: bool = False,
     cell_cap: int = 10000,
+    selected_variant_ids: list[str] | None = None,
 ) -> GenotypeMatrix:
     """Load genotypes via paged BrAPI ``search/allelematrix`` (no VCF export).
 
@@ -291,9 +310,16 @@ def _load_via_allelematrix(
         cap_cs_pages = None
     var_ps = max(1, cell_cap // cs_ps)  # stay under the server's per-response cell cap
 
+    requested_ids = (
+        [f"{module_of(variant_set_db_id)}§{value}" for value in selected_variant_ids]
+        if selected_variant_ids else None
+    )
+    if requested_ids:
+        var_ps = min(var_ps, len(requested_ids))
     first = client.search_allelematrix(
         variant_set_db_id, variant_page=0, variant_page_size=var_ps,
         callset_page=0, callset_page_size=cs_ps, data_matrix_abbreviations=abbrevs,
+        variant_db_ids=requested_ids,
     )
     sep_u = first.get("sepUnphased", "/")
     sep_p = first.get("sepPhased", "|")
@@ -325,6 +351,7 @@ def _load_via_allelematrix(
             res = first if (vp == 0 and cp == 0) else client.search_allelematrix(
                 variant_set_db_id, variant_page=vp, variant_page_size=var_ps,
                 callset_page=cp, callset_page_size=cs_ps, data_matrix_abbreviations=abbrevs,
+                variant_db_ids=requested_ids,
             )
             dm = res.get("dataMatrices") or []
             if not dm:
@@ -358,9 +385,7 @@ def _load_via_allelematrix(
         gt, variant_ids = gt[:max_markers], variant_ids[:max_markers]
 
     # variantDbIds are "MODULE§<name>"; strip the module prefix to match VCF-path IDs.
-    variant_ids = np.array(
-        [str(v).split("§", 1)[1] if "§" in str(v) else str(v) for v in variant_ids]
-    )
+    variant_ids = np.array([_brapi_variant_id(v) for v in variant_ids])
     sample_ids = sample_ids or []
     sample_names = [name_map.get(sid) or sid for sid in sample_ids]
     chrom, pos = _parse_variant_coords(list(variant_ids))
@@ -425,8 +450,8 @@ def load_genotypes(
     """Load a variant set's genotypes as a :class:`GenotypeMatrix`.
 
     ``method="vcf"`` (default) exports the whole variant set once, parses it with
-    scikit-allel and caches it in-process; ``max_markers`` then returns an
-    evenly-spaced subsample. ``method="allelematrix"`` pulls genotypes via paged
+    scikit-allel and caches it in-process; ``max_markers`` selects the first N IDs in
+    canonical Gigwa search order. ``method="allelematrix"`` pulls those same IDs via paged
     BrAPI ``search/allelematrix`` instead — useful for subset/scale extraction
     (honours ``max_markers`` and ``max_samples`` server-side); it is session-cached
     per ``(variant set, max_markers, max_samples, with_depth)`` so repeat tool calls
@@ -435,18 +460,27 @@ def load_genotypes(
 
     ``region`` (``"chrom"`` or ``"chrom:start-end"``, 1-based) restricts the matrix to a
     genomic window; it is applied to the (cached) full matrix before any ``max_markers``
-    subsample, so subsampling then draws from within the window.
+    selection, so capped markers are chosen from within the window.
     """
+    selected_ids = (
+        _canonical_variant_ids(client, variant_set_db_id, max_markers, region)
+        if max_markers else None
+    )
+    if max_markers and not selected_ids:
+        raise GigwaError(f"No variants matched the requested cap/region for {variant_set_db_id}.")
     if method == "allelematrix":
-        key = (variant_set_db_id, max_markers, max_samples, with_depth)
+        key = (variant_set_db_id, max_markers, max_samples, with_depth, region)
         gm = _AM_SESSION_CACHE.get(key) if use_cache else None
         if gm is None:
             gm = _load_via_allelematrix(
                 client, variant_set_db_id, max_markers=max_markers,
                 max_samples=max_samples, with_depth=with_depth,
+                selected_variant_ids=selected_ids,
             )
             if use_cache:
                 _AM_SESSION_CACHE[key] = gm
+        if selected_ids is not None:
+            return _select_variant_ids(gm, selected_ids)
         return _apply_region(gm, region)
 
     full = _SESSION_CACHE.get(variant_set_db_id) if use_cache else None
@@ -455,8 +489,8 @@ def load_genotypes(
         if use_cache:
             _SESSION_CACHE[variant_set_db_id] = full
     gm = _apply_region(full, region)
-    if max_markers:
-        return gm.subsample_markers(max_markers)
+    if selected_ids is not None:
+        return _select_variant_ids(gm, selected_ids)
     return gm
 
 

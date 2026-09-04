@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 
 import gigwa_mcp.server as server
@@ -49,9 +48,7 @@ def test_tool_schemas_match_hand_written_shape():
 
 
 def test_catalog_resource_lists_all_tools():
-    out = asyncio.run(server.mcp.read_resource("catalog://tools"))
-    content = out[0].content if isinstance(out, (list, tuple)) else out
-    data = json.loads(content)
+    data = json.loads(server.tool_catalog())
     assert data["tool_count"] == len(server.TOOL_CATALOG)
     listed = {t["name"] for cat in data["categories"] for t in cat["tools"]}
     assert listed == set(server.TOOL_CATALOG)

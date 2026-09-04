@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from ..analysis.genotypes import _name_map, module_of
+from ..identifiers import individual_to_sample_names, module_of, sample_name_map as _name_map
 from ..analysis.results import resolve_output_dir, write_csv
 from ..client import ProgressStatus
 from ..errors import GigwaAPIError, GigwaError
@@ -117,7 +117,7 @@ def _callset_metadata(
     Each row carries ``sample_name``, ``callSetName``, ``sampleDbId``, ``callSetDbId`` plus
     every key found across the callsets' ``additionalInfo`` (missing values filled with "").
 
-    ``sample_name`` is resolved with :func:`~gigwa_mcp.analysis.genotypes._name_map`, the
+    ``sample_name`` is resolved with :func:`~gigwa_mcp.identifiers.sample_name_map`, the
     single naming rule the loaded genotype matrix uses (accession recovered from
     ``sampleDbId``, else ``callSetName``, else ``callSetDbId``), so it lines up with
     ``GenotypeMatrix.sample_names`` in the analysis tools. The raw ``callSetName`` is kept
@@ -190,14 +190,7 @@ def _individual_to_sample_names(client, variant_set_db_id: str) -> dict[str, lis
         callsets = client.search_callsets(variant_set_db_id)
     except GigwaError:  # metadata is still worth writing without the bridge column
         return {}
-    names = _name_map(callsets, variant_set_db_id)
-    out: dict[str, list[str]] = {}
-    for cs in callsets:
-        individual = str(cs.get("callSetName") or "").split("-")[0]
-        resolved = names.get(cs.get("callSetDbId"))
-        if individual and resolved:
-            out.setdefault(individual, []).append(resolved)
-    return out
+    return individual_to_sample_names(callsets, variant_set_db_id)
 
 
 @mcp.tool()
@@ -292,9 +285,9 @@ def filter_individuals_by_metadata(variant_set_db_id: str, filters_json: str) ->
     ``list_metadata_values``) to a list of acceptable values, e.g. ``{"GroupK4": ["cA"]}``.
     Multiple fields combine with AND; multiple values for one field combine with OR.
     Returns the matching **individual**-level identifiers, ready to pass directly to
-    ``export_genotypes``'s ``individuals`` parameter or the diversity tools'
-    ``groups_json`` as-is — no need to separately resolve or deduplicate to per-sample/
-    callset ids first: Gigwa's export resolves each individual to all of its samples
+    ``export_genotypes``'s ``individuals`` parameter. Diversity ``groups_json`` instead
+    matches analysis sample names; obtain those from ``get_germplasm_metadata``'s
+    ``sample_name`` column. Gigwa's export resolves each individual to all of its samples
     across runs server-side (verified against the Gigwa server source), including when an
     individual has more than one sample.
     """

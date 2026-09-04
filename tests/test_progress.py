@@ -3,8 +3,6 @@ delivery of notifications/progress from a tool body through FastMCP."""
 
 from __future__ import annotations
 
-import asyncio
-
 from gigwa_mcp import progress
 from gigwa_mcp.server import mcp, progress_tool
 
@@ -34,7 +32,7 @@ def test_progress_tool_preserves_schema_and_hides_ctx():
     mcp._tool_manager.remove_tool("sample_tool")
 
 
-def test_progress_tool_body_runs_and_can_notify_end_to_end():
+def test_progress_tool_body_runs_and_forwards_notifications(monkeypatch):
     emitted: list[tuple] = []
 
     @progress_tool()
@@ -44,16 +42,15 @@ def test_progress_tool_body_runs_and_can_notify_end_to_end():
         progress.notify("step 2", 2, 2)
         return f"done {x}"
 
-    # A fake Context whose report_progress records what the body emitted.
-    class FakeCtx:
-        async def report_progress(self, prog, total, message):
-            emitted.append((prog, total, message))
+    async def reporter(prog, total, message):
+        emitted.append((prog, total, message))
 
-    async def run():
-        return await mcp._tool_manager.get_tool("worker").fn(x=5, ctx=FakeCtx())
-
-    result = asyncio.run(run())
-    text = result[0].text if isinstance(result, (list, tuple)) else str(result)
-    assert "done 5" in text
+    monkeypatch.setattr(progress.from_thread, "run", lambda fn, *args: emitted.append(args))
+    token = progress.set_reporter(reporter)
+    try:
+        result = mcp._tool_manager.get_tool("worker").fn.fn(5)
+    finally:
+        progress.reset_reporter(token)
+    assert result == "done 5"
     assert emitted == [(1.0, 2, "step 1"), (2.0, 2, "step 2")]
     mcp._tool_manager.remove_tool("worker")

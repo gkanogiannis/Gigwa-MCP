@@ -7,9 +7,9 @@ set -e
 
 # Check if GIGWA_MCP_PORT is set and not empty
 if [ -n "$GIGWA_MCP_PORT" ]; then
-    echo "Starting Gigwa MCP server in HTTP mode on port $GIGWA_MCP_PORT"
+    echo "Starting Gigwa MCP server in HTTP mode on port $GIGWA_MCP_PORT" >&2
     exec gigwa-mcp --port "$GIGWA_MCP_PORT"
 else
-    echo "Starting Gigwa MCP server in STDIO mode"
+    echo "Starting Gigwa MCP server in STDIO mode" >&2
     exec gigwa-mcp --stdio
 fi

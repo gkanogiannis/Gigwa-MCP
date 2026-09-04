@@ -6,7 +6,7 @@ import allel
 import numpy as np
 
 from gigwa_mcp.analysis.genotypes import GenotypeMatrix
-from gigwa_mcp.tools.diversity import _groups_from_tsv, _sample_group_map
+from gigwa_mcp.tools.diversity import _groups_from_tsv, _resolve_groups, _sample_group_map
 
 
 def _gm():
@@ -44,3 +44,9 @@ def test_groups_from_tsv_matches_callset_id(tmp_path):
     p.write_text("individual\tpop\nS1\tA\nS2\tB\n")
     groups = _groups_from_tsv(_gm(), str(p), "pop")
     assert groups == {"A": [0], "B": [1]}
+
+
+def test_groups_json_reports_unmatched_members():
+    groups, unmatched = _resolve_groups(_gm(), '{"A":["acc1","missing"],"B":["S2"]}')
+    assert groups == {"A": [0], "B": [1]}
+    assert unmatched == ["missing"]

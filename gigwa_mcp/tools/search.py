@@ -14,6 +14,7 @@ import pandas as pd
 
 from ..analysis.genotypes import parse_region
 from ..analysis.results import resolve_output_dir, write_csv
+from ..exports import ExportSelection
 from ..server import get_client, mcp, progress_tool
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
@@ -231,11 +232,12 @@ def export_genotypes(
 
     For large sets this can take a while; raise ``timeout`` (seconds), or set
     ``wait=False`` to return immediately once the export is kicked off instead of blocking
-    for the whole thing. That returns a download URL rather than a file; check progress
+    for the whole thing. A server that queues the work returns a download URL; check progress
     with ``get_export_progress`` and, once it reports complete, retrieve the file with
     ``fetch_export_file`` (that URL, plus ``output_path``). ``wait=False`` always goes
-    through the selection-aware endpoint, even with no filters set, since that is the only
-    one with a separate progress channel to poll.
+    through the selection-aware endpoint, even with no filters set. Some Gigwa builds
+    return the completed bytes immediately; in that case they are written to
+    ``output_path`` and no progress/fetch step is needed.
     """
     client = get_client()
     dest = Path(output_path)
@@ -248,20 +250,31 @@ def export_genotypes(
     chrom, start, end = parse_region(region) if region else (None, None, None)
 
     if not wait:
-        export_url = client.start_export(
+        result = client.start_export_result(
             variant_set_db_id,
-            fmt=format,
-            reference_name=chrom,
-            start=start,
-            end=end,
-            selected_variant_types=selected_variant_types,
-            min_maf=min_maf,
-            max_maf=max_maf,
-            max_missing_data=max_missing_data,
-            exported_individuals=individuals,
-            metadata_fields=metadata_fields,
-            keep_on_server=keep_on_server,
+            selection=ExportSelection(
+                fmt=format,
+                reference_name=chrom,
+                start=start,
+                end=end,
+                selected_variant_types=selected_variant_types,
+                min_maf=min_maf,
+                max_maf=max_maf,
+                max_missing_data=max_missing_data,
+                exported_individuals=individuals,
+                metadata_fields=metadata_fields,
+                keep_on_server=keep_on_server,
+            ),
+            immediate_dest_path=dest,
         )
+        if result.completed_path is not None:
+            size = result.completed_path.stat().st_size
+            media = f"; media type {result.media_type}" if result.media_type else ""
+            return (
+                f"Export completed immediately -> {result.completed_path} "
+                f"({size:,} bytes{media}); no progress polling or fetch is needed."
+            )
+        export_url = result.download_url
         return (
             f"Export started for {variant_set_db_id} as {format} (not waiting).\n"
             f"Check status with get_export_progress().\n"

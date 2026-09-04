@@ -28,10 +28,7 @@ def test_prompts_registered():
 
 
 def test_prompt_renders_with_arguments():
-    got = asyncio.run(
-        server.mcp.get_prompt("region_scan", {"variant_set_db_id": "VS§1§r", "region": "chr1:1-100"})
-    )
-    text = got.messages[0].content.text
+    text = server.prompts.region_scan("VS§1§r", "chr1:1-100")
     assert "chr1:1-100" in text and "VS§1§r" in text
     assert "count_variants" in text  # it chains the relevant tools
 

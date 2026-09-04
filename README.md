@@ -59,6 +59,9 @@ genebanks, but works with any Gigwa instance.
   - [Project layout](#project-layout)
   - [Testing](#testing)
   - [Changelog](#changelog)
+    - [v1.9.1 — export and container reliability](#v191--export-and-container-reliability)
+    - [v1.9.0 — MCP SDK v2, selection-aware export \& metadata endpoints](#v190--mcp-sdk-v2-selection-aware-export--metadata-endpoints)
+    - [v1.8.0 — callset-level metadata \& richer connection info](#v180--callset-level-metadata--richer-connection-info)
     - [v1.7.0 — HTTP transport](#v170--http-transport)
     - [v1.6.0 — runtime server switch](#v160--runtime-server-switch)
     - [v1.5.0 — Agent Skills](#v150--agent-skills)
@@ -312,6 +315,14 @@ docker build -t gigwa-mcp .
 The examples below use the local tag `gigwa-mcp`; swap in
 `ghcr.io/gkanogiannis/gigwa-mcp:latest` to run the prebuilt image instead.
 
+The image starts in stdio mode by default. To serve Streamable HTTP instead, explicitly
+set a port and publish it:
+
+```bash
+docker run -d --rm -p 8184:8184 -e GIGWA_MCP_PORT=8184 \
+  -e GIGWA_URL -e GIGWA_USER -e GIGWA_PASS gigwa-mcp
+```
+
 **MCP client config** (Claude Desktop / Claude Code) — use `docker` as the command:
 
 ```json
@@ -493,7 +504,7 @@ args `max_markers` / `method` (`"vcf"` | `"allelematrix"`), and `region`
 | `count_variants` | `reference_name?`, `start?`, `end?`, `min_maf?`, `max_maf?`, `max_missing_data?` | server-side match count (no download) |
 | `search_variants` | same filters as `count_variants`, `max_variants=100000` | `variant_search.csv` (id/chrom/pos/ref/alt) |
 | `list_export_formats` | (none) | the instance's export handlers + type/ploidy limits |
-| `export_genotypes` | `output_path`, `format="VCF"`, plus `region?`, `min_maf?`, `individuals?`, `metadata_fields?`, `wait=True` | writes the export file (or a download URL when `wait=False`) |
+| `export_genotypes` | `output_path`, `format="VCF"`, plus `region?`, `min_maf?`, `individuals?`, `metadata_fields?`, `wait=True` | writes the export file; `wait=False` returns a URL or saves an immediately returned file |
 | `get_export_progress` | (none) | status of this session's export |
 | `fetch_export_file` | `download_url`, `output_path` | writes the completed export |
 | `search_callsets` | `variant_set_db_id` | `sample_metadata.csv` (per-sample attributes) |
@@ -786,6 +797,8 @@ gigwa_mcp/
   __main__.py           # python -m gigwa_mcp → stdio server
   config.py             # .env / env loading (GIGWA_URL/USER/PASS/TIMEOUT)
   client.py             # GigwaClient: auth, multipart upload, progress, BrAPI calls
+  exports.py            # selection export options, response handling, safe downloads
+  identifiers.py        # individual/sample/callset identifier resolution
   server.py             # FastMCP instance + get_client()
   importers/
     dartseq.py          # DArTseq xlsx → standard VCF (2-row genotype calling)
@@ -817,6 +830,18 @@ statistics against hand-computed values; `test_genotypes.py` exercises VCF parsi
 callset-name mapping with a mock client. The suite needs no live Gigwa server.
 
 ## Changelog
+
+### v1.9.1 — export and container reliability
+
+- Selection exports now accept both Gigwa response styles: a queued download URL or an
+  immediately returned binary file. Immediate files are written atomically and do not need
+  progress polling or `fetch_export_file`.
+- Docker once again defaults to clean stdio transport; entrypoint diagnostics go to stderr.
+  HTTP mode requires an explicit `GIGWA_MCP_PORT`.
+- Capped VCF and allele-matrix analyses now both use the first N markers in canonical
+  Gigwa search order, making their sampled markers directly comparable.
+- Individual/sample resolution preserves hyphenated accession names, and grouping reports
+  identifiers it could not match.
 
 ### v1.9.0 — MCP SDK v2, selection-aware export & metadata endpoints
 

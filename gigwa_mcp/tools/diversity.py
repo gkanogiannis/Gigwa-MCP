@@ -214,7 +214,7 @@ def _groups_from_tsv(gm, tsv_path: str, group_column: str, id_column: str = "ind
     return groups
 
 
-def _resolve_groups(gm, groups_json: str | None) -> dict[str, list[int]]:
+def _resolve_groups(gm, groups_json: str | None) -> tuple[dict[str, list[int]], list[str]]:
     """Map a {group: [accession names/ids]} JSON object to sample-index lists."""
     mapping = json.loads(groups_json)
     name_to_idx: dict[str, int] = {}
@@ -222,11 +222,13 @@ def _resolve_groups(gm, groups_json: str | None) -> dict[str, list[int]]:
         name_to_idx.setdefault(str(sname), i)
         name_to_idx.setdefault(str(sid), i)
     groups: dict[str, list[int]] = {}
+    unmatched: list[str] = []
     for gname, members in mapping.items():
         idx = [name_to_idx[str(m)] for m in members if str(m) in name_to_idx]
+        unmatched.extend(str(m) for m in members if str(m) not in name_to_idx)
         if idx:
             groups[gname] = idx
-    return groups
+    return groups, unmatched
 
 
 @progress_tool()
@@ -256,8 +258,9 @@ def diversity_fst(
     """
     client = get_client()
     gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method, region=region)
+    unmatched: list[str] = []
     if groups_json:
-        groups = _resolve_groups(gm, groups_json)
+        groups, unmatched = _resolve_groups(gm, groups_json)
     elif metadata_tsv and group_column:
         groups = _groups_from_tsv(gm, metadata_tsv, group_column, id_column)
     else:
@@ -287,10 +290,11 @@ def diversity_fst(
 
     sizes = ", ".join(f"{k}={len(v)}" for k, v in groups.items())
     pair_lines = "\n".join(f"    {r['group_a']} vs {r['group_b']}: Fst={r['fst']:.4f}" for r in rows)
+    warning = f"\nWarning: {len(unmatched)} group member(s) did not match: {', '.join(unmatched[:10])}" if unmatched else ""
     return (
         f"Pairwise Fst for {variant_set_db_id} (groups: {sizes})\n"
         f"{pair_lines}\n"
-        f"File: {path}"
+        f"File: {path}{warning}"
     )
 
 
@@ -317,8 +321,9 @@ def diversity_by_group(
     """
     client = get_client()
     gm = load_genotypes(client, variant_set_db_id, max_markers=max_markers or None, method=method, region=region)
+    unmatched: list[str] = []
     if groups_json:
-        groups = _resolve_groups(gm, groups_json)
+        groups, unmatched = _resolve_groups(gm, groups_json)
     elif metadata_tsv and group_column:
         groups = _groups_from_tsv(gm, metadata_tsv, group_column, id_column)
     else:
@@ -362,11 +367,12 @@ def diversity_by_group(
         f"rAR={r['rarefied_ar']:.2f}"
         for _, r in df.iterrows()
     )
+    warning = f"\nWarning: {len(unmatched)} group member(s) did not match: {', '.join(unmatched[:10])}" if unmatched else ""
     return (
         f"Per-group diversity for {variant_set_db_id} "
         f"({gm.n_variants} markers, {len(groups)} groups; rarefied to {rar_n} gene copies)\n"
         f"{lines}\n"
-        f"File: {path}"
+        f"File: {path}{warning}"
     )
 
 
