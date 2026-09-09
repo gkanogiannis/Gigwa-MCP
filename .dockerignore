@@ -23,3 +23,7 @@ scripts/
 .vscode/
 .idea/
 .DS_Store
+.mcpbignore
+mcpb.sh
+manifest.json
+GigwaMCP.mcpb

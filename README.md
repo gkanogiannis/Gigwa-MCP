@@ -10,7 +10,7 @@
 
 An [MCP](https://modelcontextprotocol.io) server that drives a local or remote
 [Gigwa](https://github.com/SouthGreenPlatform/Gigwa2) installation over its REST API.
-It lets an MCP client (Claude Desktop / Claude Code) run the whole genotyping workflow
+It lets an MCP client (Codex CLI / Claude Desktop / Claude Code) run the whole genotyping workflow
 in plain language: **connect → import genotype data & metadata → run QC and diversity
 analyses → audit databases for import artifacts**. Built for genomic-resources teams and
 genebanks, but works with any Gigwa instance.
@@ -33,7 +33,10 @@ genebanks, but works with any Gigwa instance.
   - [Requirements](#requirements)
   - [Installation](#installation)
     - [Find \& try it on Glama](#find--try-it-on-glama)
-    - [Install it yourself](#install-it-yourself)
+    - [From uvx or PyPI](#from-uvx-or-pypi)
+    - [From the GitHub repository](#from-the-github-repository)
+    - [From an MCPB bundle](#from-an-mcpb-bundle)
+    - [Add it to Codex CLI](#add-it-to-codex-cli)
     - [Add it to Claude Code (the simple version)](#add-it-to-claude-code-the-simple-version)
     - [Run with Docker](#run-with-docker)
   - [Configuration](#configuration)
@@ -184,7 +187,8 @@ Variant sets are addressed by their BrAPI `variantSetDbId`, of the form
   `pip`/`pipx`-install the package and point your client at the resulting executable instead.
   Install it with `curl -LsSf https://astral.sh/uv/install.sh | sh` (macOS/Linux) or
   `pip install uv`, then make sure `uvx` is on your `PATH` (see the note below).
-- A reachable **Gigwa** server (local or remote) and credentials.
+- A reachable **Gigwa** server (local or remote). Credentials are optional for public
+  data; the default ICARDA connection is anonymous.
 - Optional: the **minimap2** CLI on `PATH` for DArTseq genome-anchoring of very large
   genomes (otherwise the in-process `mappy` binding is used).
 - Optional: the **`[viz]`** extra (matplotlib) to run the plotting recipes / regenerate
@@ -204,46 +208,158 @@ anonymous access, so **no setup or credentials are needed** for a first look. Gl
 generates a ready-to-paste connection config for common MCP clients; under the hood that
 just runs `uvx gigwa-mcp` (or the Docker image) — the same as the steps below.
 
-### Install it yourself
+### From uvx or PyPI
 
-**From PyPI** (recommended):
+The commands below use a Linux shell. Choose one installation route, then register
+the server with your MCP client. The client starts the server automatically.
 
-```bash
-pip install gigwa-mcp                # core + analysis (scikit-allel/scipy)
-pip install "gigwa-mcp[viz]"         # + matplotlib, for the plotting recipes
-```
-
-Or run it without installing into your environment using [pipx](https://pipx.pypa.io/)
-or [uv](https://docs.astral.sh/uv/) which is handy as the `command` in an MCP client config
-(see below):
+**On demand with uvx (recommended for Codex CLI):** install
+[uv](https://docs.astral.sh/uv/getting-started/installation/), which provides `uvx`,
+and confirm `uvx --version` works. This downloads the PyPI package into an isolated
+environment; no separate `pip install gigwa-mcp` is needed:
 
 ```bash
-pipx install gigwa-mcp        # then: gigwa-mcp
-uvx gigwa-mcp                 # run on demand, no install step
+uvx gigwa-mcp --help
 ```
 
-**From source** (for development or an unreleased version):
+To select a particular release, use `uvx --from "gigwa-mcp==1.9.1" gigwa-mcp --help`. Omit `--help`
+when configuring the MCP client so it starts the stdio server.
+
+**Persistent PyPI installation with pip:** create a dedicated virtual environment:
 
 ```bash
-git clone https://github.com/gkanogiannis/Gigwa-MCP.git gigwa-mcp && cd gigwa-mcp
-python -m venv venv && source venv/bin/activate
-pip install -e .            # core + analysis (scikit-allel/scipy)
-pip install -e ".[dev]"     # + pytest, to run the test suite
-pip install -e ".[viz]"     # + matplotlib, for plotting recipes / example figures
+python3 -m venv "$HOME/.local/share/gigwa-mcp-venv"
+"$HOME/.local/share/gigwa-mcp-venv/bin/python" -m pip install gigwa-mcp
+"$HOME/.local/share/gigwa-mcp-venv/bin/gigwa-mcp" --help
 ```
 
-Run the stdio server directly to smoke-test:
+Use `"gigwa-mcp==1.9.1"` in place of `gigwa-mcp` to pin a release, or
+`"gigwa-mcp[viz]"` to include plotting dependencies. Alternatively,
+`pipx install gigwa-mcp` creates and manages an isolated environment for you;
+register the resulting `gigwa-mcp` executable.
+
+### From the GitHub repository
+
+Clone the repository, or change into your existing checkout and skip the clone:
 
 ```bash
-python -m gigwa_mcp         # or: gigwa-mcp
+git clone https://github.com/gkanogiannis/Gigwa-MCP.git
+cd Gigwa-MCP
+python3 -m venv venv
+venv/bin/python -m pip install .
+venv/bin/gigwa-mcp --help
 ```
 
-(Normally you don't run it by hand as your MCP client launches it; see below.)
+For development, use `venv/bin/python -m pip install -e ".[dev]"` instead; editable
+installation makes source changes available without reinstalling. The optional
+`.[viz]` extra adds plotting dependencies. A normal `pip install .` must be rerun
+after updating the checkout.
+
+If you need a private connection, copy `.env.example` to `.env` and edit the values.
+The server searches for `.env` in its **working directory and parent directories**,
+not automatically beside its executable. See the Codex working-directory example
+below, and [Configuration](#configuration) for connection options.
+
+### From an MCPB bundle
+
+Download **[GigwaMCP.mcpb](https://github.com/gkanogiannis/Gigwa-MCP/releases/latest/download/GigwaMCP.mcpb)**
+from the latest release, or pick a specific version from the
+[releases page](https://github.com/gkanogiannis/Gigwa-MCP/releases)
+(`https://github.com/gkanogiannis/Gigwa-MCP/releases/download/1.9.1/GigwaMCP.mcpb`).
+The bundle is a release asset, not a file in the repository, because it is ~86 MB.
+It contains the server and its dependencies.
+The current bundle contains **CPython 3.13, Linux x86-64 native libraries** and
+requires a compatible Linux system with Python 3.13 installed. Its manifest launches
+`python3`, so that command must resolve to Python 3.13 in the desktop client's
+environment. Python itself is not bundled.
+
+Compatible system libraries are also required. The locally inspected bundled
+`mappy` binary references glibc 2.34, requiring glibc 2.34 or newer; meeting this
+minimum alone does not guarantee compatibility with all bundled dependencies.
+Older glibc systems and musl-based distributions such as Alpine cannot run this
+binary natively. The published archive's exact minimum system requirements have
+not been independently verified.
+
+[MCPB desktop extensions](https://github.com/modelcontextprotocol/mcpb) can be
+installed by opening the file in a desktop client that supports the format and
+following its installation dialog. Upstream describes Claude Desktop support for
+macOS and Windows; this Linux bundle cannot run natively on those platforms.
+For an unofficial Linux Claude Desktop client, check that client's MCPB support
+and installation instructions. A successful `mcpb pack` does not verify desktop
+client compatibility.
+
+**Codex CLI does not directly import MCPB files.** On a compatible Linux machine,
+you can extract the bundle into a fresh directory and register its Python module:
+
+```bash
+curl -fLO https://github.com/gkanogiannis/Gigwa-MCP/releases/latest/download/GigwaMCP.mcpb
+mkdir -p "$HOME/.local/share/gigwa-mcp-bundle"
+unzip GigwaMCP.mcpb -d "$HOME/.local/share/gigwa-mcp-bundle"
+codex mcp add gigwa \
+  --env "PYTHONPATH=$HOME/.local/share/gigwa-mcp-bundle:$HOME/.local/share/gigwa-mcp-bundle/venv/server/lib" \
+  -- python3.13 -m gigwa_mcp
+```
+
+This requires `unzip` and Python 3.13 on `PATH`. Extract a replacement bundle into
+a fresh directory to avoid mixing old and new dependencies. For Codex, the uvx
+route above is usually simpler. The bundle does not include your `.env` credentials.
+
+### Add it to Codex CLI
+
+With [Codex CLI](https://developers.openai.com/codex/mcp/) installed, choose **one**
+of the following registrations. With uvx:
+
+```bash
+codex mcp add gigwa -- uvx gigwa-mcp
+```
+
+For the persistent PyPI virtual environment created above:
+
+```bash
+codex mcp add gigwa -- "$HOME/.local/share/gigwa-mcp-venv/bin/gigwa-mcp"
+```
+
+For a GitHub checkout, run this from the repository root. GNU `env --chdir` sets
+the server's working directory so it can find the repository's `.env` even when
+you launch Codex from another project:
+
+```bash
+codex mcp add gigwa -- env --chdir="$(pwd)" "$(pwd)/venv/bin/gigwa-mcp"
+```
+
+Paths are resolved when you register the server; keep that checkout and virtual
+environment in place. Relative output paths such as `gigwa_results/` will also be
+resolved from this working directory. For pipx, use the absolute executable path
+reported by `command -v gigwa-mcp` instead of the virtual-environment path.
+
+Without connection settings, Gigwa-MCP uses public ICARDA access. To configure a
+different endpoint with uvx, for example:
+
+```bash
+codex mcp add gigwa --env GIGWA_URL=https://your-server.example/gigwa -- uvx gigwa-mcp
+```
+
+For private data, supply `GIGWA_USER` and `GIGWA_PASS` through the server's environment
+or a `.env` file discoverable from its working directory. CLI `--env` values are
+stored in client configuration; passwords typed literally can also enter shell
+history. Do not commit credentials. See [Configuration](#configuration).
+
+Verify the registration, then start a new Codex session:
+
+```bash
+codex mcp get gigwa
+codex mcp list
+```
+
+Ask "Is my Gigwa up, and what version?" to test an actual tool call. Registration
+alone does not verify connectivity. If `uvx` cannot be found, use its absolute
+path from `command -v uvx`. To switch installation routes, remove the old entry
+with `codex mcp remove gigwa` and register the chosen command again.
 
 ### Add it to Claude Code (the simple version)
 
 Think of this as plugging a new tool into Claude Code so you can just *talk* to your Gigwa
-server. You do it once, with a single command without editting any files by hand.
+server. You do it once, with a single command, without editing any files by hand.
 
 1. **Install [`uv`](https://docs.astral.sh/uv/), which provides the `uvx` command.** It's a
    small helper that downloads and runs `gigwa-mcp` for you, so you don't have to install
@@ -277,7 +393,9 @@ server. You do it once, with a single command without editting any files by hand
    - `gigwa` : the nickname you're giving this tool.
    - `--scope user` : "make it available in all my projects" (use `--scope project` instead
      to share it with your team via a `.mcp.json` file in the repo).
-   - the three `-e` lines : your Gigwa address and login, handed to the tool privately.
+   - the three `-e` lines : your Gigwa address and login, stored in client configuration.
+     Literal passwords may also be saved in shell history; use a discoverable `.env`
+     file or inherited environment variables when appropriate.
    - everything after `--` : the command that actually starts the server (`uvx gigwa-mcp`).
 
 3. **Check it worked.** In Claude Code, type `/mcp`. You should see **gigwa** listed.
@@ -410,6 +528,9 @@ GIGWA_PASS_PROD=your_password
 ```
 
 ## Connecting from an MCP client
+
+For Codex CLI, use [Add it to Codex CLI](#add-it-to-codex-cli) above; the following
+JSON example is for Claude clients, not Codex's TOML configuration.
 
 Add a stdio server entry (Claude Desktop `claude_desktop_config.json` or Claude Code MCP
 settings). If you `pip install`ed into a venv, point `command` at that venv's
