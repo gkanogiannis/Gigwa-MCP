@@ -22,6 +22,50 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       - run: pytest -q
 
+  # `mappy` has no Windows wheels, so before 1.9.2 it made the whole package
+  # uninstallable there. The `sys_platform != 'win32'` marker excludes it; this job is
+  # what proves that actually works, since every other job runs on Linux.
+  windows:
+    name: Windows install without mappy
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # Not editable: this is the route a user takes, and it exercises the wheel build.
+      - run: python -m pip install ".[dev]"
+      - name: Platform marker excluded mappy
+        shell: bash
+        run: |
+          python - <<'PY'
+          import importlib.util, sys
+          if importlib.util.find_spec("mappy") is not None:
+              sys.exit("mappy was installed on Windows; the sys_platform marker is not taking effect")
+          PY
+      - name: Server imports and the console script runs without mappy
+        shell: bash
+        run: |
+          python -c "import gigwa_mcp.server"
+          gigwa-mcp --help
+      - name: Reference mapping fails with the guided error, not ImportError
+        shell: bash
+        run: |
+          python - <<'PY'
+          import shutil, sys
+          from gigwa_mcp.importers.refmap import map_tags_to_reference
+          if shutil.which("minimap2"):
+              sys.exit("unexpected: minimap2 is on PATH, so this assertion proves nothing")
+          try:
+              map_tags_to_reference([], "unused.fa", backend="mappy")
+          except ValueError as exc:
+              assert "mappy alignment backend is unavailable" in str(exc), exc
+          else:
+              sys.exit("expected a guided ValueError when mappy is absent")
+          PY
+      # Also proves the importorskip guards in tests/test_refmap.py hold with no mappy.
+      - run: pytest -q
+
   container:
     runs-on: ubuntu-latest
     steps:

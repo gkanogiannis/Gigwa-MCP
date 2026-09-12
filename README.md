@@ -32,15 +32,12 @@ genebanks, but works with any Gigwa instance.
   - [How it works](#how-it-works)
   - [Requirements](#requirements)
   - [Installation](#installation)
-    - [Find \& try it on Glama](#find--try-it-on-glama)
-    - [From uvx or PyPI](#from-uvx-or-pypi)
-    - [From the GitHub repository](#from-the-github-repository)
-    - [From an MCPB bundle](#from-an-mcpb-bundle)
-    - [Add it to Codex CLI](#add-it-to-codex-cli)
-    - [Add it to Claude Code (the simple version)](#add-it-to-claude-code-the-simple-version)
-    - [Run with Docker](#run-with-docker)
+    - [Try it first (no install)](#try-it-first-no-install)
+    - [1. Get it](#1-get-it)
+    - [2. Point your client at it](#2-point-your-client-at-it)
+    - [Installing from the MCPB bundle](#installing-from-the-mcpb-bundle)
+  - [Run with Docker](#run-with-docker)
   - [Configuration](#configuration)
-  - [Connecting from an MCP client](#connecting-from-an-mcp-client)
   - [Quick start](#quick-start)
   - [Tool reference](#tool-reference)
   - [Prompts \& resources](#prompts--resources)
@@ -62,17 +59,10 @@ genebanks, but works with any Gigwa instance.
   - [Project layout](#project-layout)
   - [Testing](#testing)
   - [Changelog](#changelog)
+    - [v1.9.2 — Windows dependency compatibility](#v192--windows-dependency-compatibility)
     - [v1.9.1 — export and container reliability](#v191--export-and-container-reliability)
     - [v1.9.0 — MCP SDK v2, selection-aware export \& metadata endpoints](#v190--mcp-sdk-v2-selection-aware-export--metadata-endpoints)
-    - [v1.8.0 — callset-level metadata \& richer connection info](#v180--callset-level-metadata--richer-connection-info)
-    - [v1.7.0 — HTTP transport](#v170--http-transport)
-    - [v1.6.0 — runtime server switch](#v160--runtime-server-switch)
-    - [v1.5.0 — Agent Skills](#v150--agent-skills)
-    - [v1.4.16 — anonymous access \& fast-fail timeouts](#v1416--anonymous-access--fast-fail-timeouts)
-    - [v1.3.4 — tool catalog, EDAM annotations \& progress reporting](#v134--tool-catalog-edam-annotations--progress-reporting)
-    - [v1.2.0 — server-side search, filtered analysis \& export](#v120--server-side-search-filtered-analysis--export)
-    - [v1.1.0 — Docker support](#v110--docker-support)
-    - [v1.0.0 — initial release](#v100--initial-release)
+    - [Earlier releases](#earlier-releases)
   - [License \& contributing](#license--contributing)
 
 ## Overview
@@ -91,10 +81,10 @@ never modify the data in Gigwa.
 
 ## Features
 
-**Import pipeline**
+#### Import pipeline
 
 | Tool | What it does |
-|------|--------------|
+| ------ | -------------- |
 | `gigwa_connect` | Switch the active Gigwa server at runtime (credentials from the environment, never the chat) |
 | `gigwa_server_info` | Verify connectivity/auth and report the server version |
 | `list_content` | List databases → projects → runs on the instance |
@@ -106,10 +96,10 @@ never modify the data in Gigwa.
 | `get_import_progress` | Poll a running import by its progress token |
 | `abort_import` | Cancel a running import (or other process) by its progress token |
 
-**Discovery, search & export (read-only)**
+#### Discovery, search & export (read-only)
 
 | Tool | What it does |
-|------|--------------|
+| ------ | -------------- |
 | `list_variant_sets` | List every run with its exact BrAPI `variantSetDbId` (the id the analysis tools take) |
 | `list_sequences` | List the chromosomes/contigs of a variant set (valid `reference_name` values) |
 | `count_variants` | Count variants matching region / MAF / missing-data filters, server-side (no download) |
@@ -123,10 +113,10 @@ never modify the data in Gigwa.
 | `list_metadata_values` | List individual-metadata field names and their distinct values |
 | `filter_individuals_by_metadata` | Select individuals by metadata field/value filters (feeds `export_genotypes`) |
 
-**QC & diversity (read-only)**
+#### QC & diversity (read-only)
 
 | Tool | What it does |
-|------|--------------|
+| ------ | -------------- |
 | `qc_call_rate` | Per-sample & per-marker call rate; flag low-call samples/markers |
 | `qc_heterozygosity` | Per-sample Ho; flag outliers (contamination / off-type / selfed) |
 | `qc_duplicate_accessions` | Pairwise IBS → group duplicate/clonal accessions |
@@ -143,10 +133,10 @@ never modify the data in Gigwa.
 Every QC & diversity tool also accepts `region` (`"chrom"` or `"chrom:start-end"`, 1-based;
 from `list_sequences`) to restrict the analysis to one genomic window.
 
-**Import-quality audit**
+#### Import-quality audit
 
 | Tool | What it does |
-|------|--------------|
+| ------ | -------------- |
 | `audit_import_quality` | Scan a whole instance (or one run) for genotype-encoding artifacts left by a bad import; rank runs BROKEN / SUSPECT / OK |
 
 ## How it works
@@ -197,35 +187,40 @@ Variant sets are addressed by their BrAPI `variantSetDbId`, of the form
 Core Python dependencies (installed automatically): `mcp`, `httpx`, `pandas`, `openpyxl`,
 `numpy`, `python-dotenv`, `scikit-allel`, `scipy`, `mappy`.
 
+Starting with 1.9.2, `mappy` is installed automatically only on non-Windows platforms
+(including Linux and macOS). Windows installations skip it. Reference mapping still
+requires a usable minimap2 CLI or mappy backend; use Linux/Docker when neither is
+available. Other tools do not require mappy. Native Windows installation of the full
+dependency set has not yet been verified.
+
 ## Installation
 
-### Find & try it on Glama
+Two steps: get the server, then point your MCP client at it. The client launches it for you —
+you never run it by hand. With no configuration it connects to the public ICARDA instance
+anonymously, so you can try everything before setting up credentials.
 
-`gigwa-mcp` is listed in the [Glama MCP directory](https://glama.ai/mcp/servers/gkanogiannis/gigwa-mcp) —
-the quickest way to see what it does. Browse its tools, prompts and resources and **try it
-live in the in-browser MCP Inspector**: it defaults to the public ICARDA instance with
-anonymous access, so **no setup or credentials are needed** for a first look. Glama also
-generates a ready-to-paste connection config for common MCP clients; under the hood that
-just runs `uvx gigwa-mcp` (or the Docker image) — the same as the steps below.
+### Try it first (no install)
 
-### From uvx or PyPI
+`gigwa-mcp` is listed in the [Glama MCP directory](https://glama.ai/mcp/servers/gkanogiannis/gigwa-mcp),
+where you can browse its tools and **run it live in the in-browser MCP Inspector** — no setup
+or credentials needed. Glama also generates a ready-to-paste config for common clients; under
+the hood it runs `uvx gigwa-mcp`, exactly like the steps below.
 
-The commands below use a Linux shell. Choose one installation route, then register
-the server with your MCP client. The client starts the server automatically.
+### 1. Get it
 
-**On demand with uvx (recommended for Codex CLI):** install
-[uv](https://docs.astral.sh/uv/getting-started/installation/), which provides `uvx`,
-and confirm `uvx --version` works. This downloads the PyPI package into an isolated
-environment; no separate `pip install gigwa-mcp` is needed:
+Pick one. **uvx is the simplest** — it downloads and runs the published package on demand,
+with no install step and nothing to update.
 
-```bash
-uvx gigwa-mcp --help
-```
+| Route | Command | Notes |
+| ----- | ------- | ----- |
+| **uvx** (recommended) | `uvx gigwa-mcp` | Needs [uv](https://docs.astral.sh/uv/getting-started/installation/). Pin a release with `uvx gigwa-mcp==1.9.2`. |
+| **pip** | `pip install gigwa-mcp` | Into a venv you manage; `"gigwa-mcp[viz]"` adds plotting. |
+| **pipx** | `pipx install gigwa-mcp` | Isolated environment, managed for you. |
+| **Docker** | `docker pull ghcr.io/gkanogiannis/gigwa-mcp:latest` | Multi-arch `linux/amd64` + `linux/arm64`. See [Run with Docker](#run-with-docker). |
+| **From source** | `git clone …` then `pip install .` | For development; see below. |
+| **MCPB bundle** | [download](https://github.com/gkanogiannis/Gigwa-MCP/releases/latest/download/GigwaMCP.mcpb) | Desktop clients that support MCPB. Linux x86-64 + Python 3.13 only. |
 
-To select a particular release, use `uvx --from "gigwa-mcp==1.9.1" gigwa-mcp --help`. Omit `--help`
-when configuring the MCP client so it starts the stdio server.
-
-**Persistent PyPI installation with pip:** create a dedicated virtual environment:
+A dedicated virtual environment, if you prefer an explicit path to point your client at:
 
 ```bash
 python3 -m venv "$HOME/.local/share/gigwa-mcp-venv"
@@ -233,66 +228,107 @@ python3 -m venv "$HOME/.local/share/gigwa-mcp-venv"
 "$HOME/.local/share/gigwa-mcp-venv/bin/gigwa-mcp" --help
 ```
 
-Use `"gigwa-mcp==1.9.1"` in place of `gigwa-mcp` to pin a release, or
-`"gigwa-mcp[viz]"` to include plotting dependencies. Alternatively,
-`pipx install gigwa-mcp` creates and manages an isolated environment for you;
-register the resulting `gigwa-mcp` executable.
-
-### From the GitHub repository
-
-Clone the repository, or change into your existing checkout and skip the clone:
+**From source**, for development or to run an unreleased checkout:
 
 ```bash
 git clone https://github.com/gkanogiannis/Gigwa-MCP.git
 cd Gigwa-MCP
 python3 -m venv venv
-venv/bin/python -m pip install .
+venv/bin/python -m pip install -e ".[dev]"     # drop -e and [dev] for a plain install
 venv/bin/gigwa-mcp --help
 ```
 
-For development, use `venv/bin/python -m pip install -e ".[dev]"` instead; editable
-installation makes source changes available without reinstalling. The optional
-`.[viz]` extra adds plotting dependencies. A normal `pip install .` must be rerun
-after updating the checkout.
+The server looks for `.env` in its **working directory and parent directories**, not beside
+its executable — so with a source checkout, launch it from the repository root (see the Codex
+example below) or set the variables in your client config.
 
-If you need a private connection, copy `.env.example` to `.env` and edit the values.
-The server searches for `.env` in its **working directory and parent directories**,
-not automatically beside its executable. See the Codex working-directory example
-below, and [Configuration](#configuration) for connection options.
+> **If your client reports `Executable not found in $PATH: "uvx"`**, the `uv` installer put
+> `uvx` in `~/.local/bin` (or `~/.cargo/bin`) and the app launching your client cannot see it.
+> Restart the app after installing, use the absolute path from `command -v uvx`, or install
+> with `pipx install gigwa-mcp` and use `gigwa-mcp` as the command instead.
 
-### From an MCPB bundle
+### 2. Point your client at it
 
-Download **[GigwaMCP.mcpb](https://github.com/gkanogiannis/Gigwa-MCP/releases/latest/download/GigwaMCP.mcpb)**
-from the latest release, or pick a specific version from the
-[releases page](https://github.com/gkanogiannis/Gigwa-MCP/releases)
-(`https://github.com/gkanogiannis/Gigwa-MCP/releases/download/1.9.1/GigwaMCP.mcpb`).
-The bundle is a release asset, not a file in the repository, because it is ~86 MB.
-It contains the server and its dependencies.
-The current bundle contains **CPython 3.13, Linux x86-64 native libraries** and
-requires a compatible Linux system with Python 3.13 installed. Its manifest launches
-`python3`, so that command must resolve to Python 3.13 in the desktop client's
-environment. Python itself is not bundled.
+| Client | Command |
+| ------ | ------- |
+| **Claude Code** | `claude mcp add gigwa --scope user -- uvx gigwa-mcp` |
+| **Codex CLI** | `codex mcp add gigwa -- uvx gigwa-mcp` |
+| **Claude Desktop** and other JSON configs | see the snippet below |
 
-Compatible system libraries are also required. The locally inspected bundled
-`mappy` binary references glibc 2.34, requiring glibc 2.34 or newer; meeting this
-minimum alone does not guarantee compatibility with all bundled dependencies.
-Older glibc systems and musl-based distributions such as Alpine cannot run this
-binary natively. The published archive's exact minimum system requirements have
-not been independently verified.
-
-[MCPB desktop extensions](https://github.com/modelcontextprotocol/mcpb) can be
-installed by opening the file in a desktop client that supports the format and
-following its installation dialog. Upstream describes Claude Desktop support for
-macOS and Windows; this Linux bundle cannot run natively on those platforms.
-For an unofficial Linux Claude Desktop client, check that client's MCPB support
-and installation instructions. A successful `mcpb pack` does not verify desktop
-client compatibility.
-
-**Codex CLI does not directly import MCPB files.** On a compatible Linux machine,
-you can extract the bundle into a fresh directory and register its Python module:
+Add credentials with `-e`, or leave them out to use the public ICARDA instance:
 
 ```bash
-curl -fLO https://github.com/gkanogiannis/Gigwa-MCP/releases/latest/download/GigwaMCP.mcpb
+claude mcp add gigwa --scope user \
+  -e GIGWA_URL=http://localhost:8080/gigwa \
+  -e GIGWA_USER=your_user -e GIGWA_PASS=your_password \
+  -- uvx gigwa-mcp
+```
+
+In plain words: `gigwa` is the name you are giving this tool; `--scope user` makes it
+available in all your projects (`--scope project` shares it with your team through a
+`.mcp.json` in the repo); everything after `--` is the command that actually starts the
+server. Values passed with `-e` are stored in your client's configuration, and a literal
+password also lands in your shell history — a `.env` file or inherited environment variables
+avoid both. See [Configuration](#configuration).
+
+**Check it worked.** In Claude Code type `/mcp` and look for **gigwa**; with Codex run
+`codex mcp get gigwa`. Registration alone does not test connectivity, so ask
+*"Is my Gigwa up, and what version?"* to make a real tool call. Then try *"List the
+databases."*
+
+**For a different install route**, swap the command after `--`: an absolute path for pip or
+pipx (`command -v gigwa-mcp`), or, for a source checkout, `env --chdir` so the server finds
+the repository's `.env`:
+
+```bash
+codex mcp add gigwa -- env --chdir="$(pwd)" "$(pwd)/venv/bin/gigwa-mcp"
+```
+
+**JSON config** (Claude Desktop, or any client configured by file):
+
+```json
+{
+  "mcpServers": {
+    "gigwa": {
+      "command": "uvx",
+      "args": ["gigwa-mcp"],
+      "env": {
+        "GIGWA_URL": "http://localhost:8080/gigwa",
+        "GIGWA_USER": "your_user",
+        "GIGWA_PASS": "your_password"
+      }
+    }
+  }
+}
+```
+
+Use `"command": "/abs/path/to/venv/bin/gigwa-mcp"` with no `args` for a virtual-environment
+install. Every tool call authenticates on its own, so there is no per-chat "connect" step. To
+drive several servers, either register one entry each (`gigwa-local`, `gigwa-remote`) and name
+the one you mean in the prompt, or switch at runtime with `gigwa_connect` — pre-set a
+`GIGWA_USER_<PROFILE>` / `GIGWA_PASS_<PROFILE>` pair per server so no secret is typed into the
+chat.
+
+### Installing from the MCPB bundle
+
+[MCPB desktop extensions](https://github.com/modelcontextprotocol/mcpb) install by opening the
+file in a desktop client that supports the format. Download
+[GigwaMCP.mcpb](https://github.com/gkanogiannis/Gigwa-MCP/releases/latest/download/GigwaMCP.mcpb)
+from the latest release, or a specific version from the
+[releases page](https://github.com/gkanogiannis/Gigwa-MCP/releases). It is a release asset
+rather than a file in the repository because it is ~86 MB.
+
+The bundle carries **CPython 3.13 Linux x86-64 native libraries** and needs a matching system
+with Python 3.13 on `PATH` — Python itself is not bundled, and its manifest launches `python3`,
+so that command must resolve to 3.13. Upstream documents Claude Desktop MCPB support for macOS
+and Windows, which this Linux bundle cannot serve; a successful `mcpb pack` does not verify
+desktop-client compatibility. It does not include your `.env` credentials.
+
+**Codex CLI cannot import MCPB files.** On a compatible Linux machine, extract the bundle into
+a fresh directory (to avoid mixing old and new dependencies) and register its Python module:
+
+```bash
+curl -LO https://github.com/gkanogiannis/Gigwa-MCP/releases/latest/download/GigwaMCP.mcpb
 mkdir -p "$HOME/.local/share/gigwa-mcp-bundle"
 unzip GigwaMCP.mcpb -d "$HOME/.local/share/gigwa-mcp-bundle"
 codex mcp add gigwa \
@@ -300,122 +336,12 @@ codex mcp add gigwa \
   -- python3.13 -m gigwa_mcp
 ```
 
-This requires `unzip` and Python 3.13 on `PATH`. Extract a replacement bundle into
-a fresh directory to avoid mixing old and new dependencies. For Codex, the uvx
-route above is usually simpler. The bundle does not include your `.env` credentials.
+For Codex the uvx route above is usually simpler.
 
-### Add it to Codex CLI
+## Run with Docker
 
-With [Codex CLI](https://developers.openai.com/codex/mcp/) installed, choose **one**
-of the following registrations. With uvx:
-
-```bash
-codex mcp add gigwa -- uvx gigwa-mcp
-```
-
-For the persistent PyPI virtual environment created above:
-
-```bash
-codex mcp add gigwa -- "$HOME/.local/share/gigwa-mcp-venv/bin/gigwa-mcp"
-```
-
-For a GitHub checkout, run this from the repository root. GNU `env --chdir` sets
-the server's working directory so it can find the repository's `.env` even when
-you launch Codex from another project:
-
-```bash
-codex mcp add gigwa -- env --chdir="$(pwd)" "$(pwd)/venv/bin/gigwa-mcp"
-```
-
-Paths are resolved when you register the server; keep that checkout and virtual
-environment in place. Relative output paths such as `gigwa_results/` will also be
-resolved from this working directory. For pipx, use the absolute executable path
-reported by `command -v gigwa-mcp` instead of the virtual-environment path.
-
-Without connection settings, Gigwa-MCP uses public ICARDA access. To configure a
-different endpoint with uvx, for example:
-
-```bash
-codex mcp add gigwa --env GIGWA_URL=https://your-server.example/gigwa -- uvx gigwa-mcp
-```
-
-For private data, supply `GIGWA_USER` and `GIGWA_PASS` through the server's environment
-or a `.env` file discoverable from its working directory. CLI `--env` values are
-stored in client configuration; passwords typed literally can also enter shell
-history. Do not commit credentials. See [Configuration](#configuration).
-
-Verify the registration, then start a new Codex session:
-
-```bash
-codex mcp get gigwa
-codex mcp list
-```
-
-Ask "Is my Gigwa up, and what version?" to test an actual tool call. Registration
-alone does not verify connectivity. If `uvx` cannot be found, use its absolute
-path from `command -v uvx`. To switch installation routes, remove the old entry
-with `codex mcp remove gigwa` and register the chosen command again.
-
-### Add it to Claude Code (the simple version)
-
-Think of this as plugging a new tool into Claude Code so you can just *talk* to your Gigwa
-server. You do it once, with a single command, without editing any files by hand.
-
-1. **Install [`uv`](https://docs.astral.sh/uv/), which provides the `uvx` command.** It's a
-   small helper that downloads and runs `gigwa-mcp` for you, so you don't have to install
-   anything else first:
-
-   ```bash
-   curl -LsSf https://astral.sh/uv/install.sh | sh   # macOS / Linux
-   # or, on Windows PowerShell:
-   #   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-   # or, if you already have Python/pip:
-   #   pip install uv
-   ```
-
-   Then confirm it's reachable: `uvx --version` should print a version. If it says
-   "command not found", `uvx` isn't on your `PATH` yet, then see the note below. (If you'd
-   rather not use `uv` at all, `pipx install gigwa-mcp` works too; then use `gigwa-mcp`
-   in place of `uvx gigwa-mcp` everywhere below.)
-
-2. **Run this one command** in your terminal, swapping in your own Gigwa address, username,
-   and password:
-
-   ```bash
-   claude mcp add gigwa --scope user \
-     -e GIGWA_URL=http://localhost:8080/gigwa \
-     -e GIGWA_USER=your_user \
-     -e GIGWA_PASS=your_password \
-     -- uvx gigwa-mcp
-   ```
-
-   What the pieces mean, in plain words:
-   - `gigwa` : the nickname you're giving this tool.
-   - `--scope user` : "make it available in all my projects" (use `--scope project` instead
-     to share it with your team via a `.mcp.json` file in the repo).
-   - the three `-e` lines : your Gigwa address and login, stored in client configuration.
-     Literal passwords may also be saved in shell history; use a discoverable `.env`
-     file or inherited environment variables when appropriate.
-   - everything after `--` : the command that actually starts the server (`uvx gigwa-mcp`).
-
-3. **Check it worked.** In Claude Code, type `/mcp`. You should see **gigwa** listed.
-
-4. **Just ask.** Try: *"Is my Gigwa up, and what version?"* or *"List the databases."*
-   Claude picks the right tool and fills in the details for you.
-
-> **Note that `uvx` must be on your client's `PATH`.** If `/mcp` shows the server as
-> **failed** with `Executable not found in $PATH: "uvx"`, the MCP client couldn't find
-> `uvx`. The `uv` installer drops `uvx` in `~/.local/bin` (or `~/.cargo/bin`); make sure
-> that directory is on the `PATH` of the shell/app that launches Claude (restart the app
-> or your terminal after installing). As a workaround you can point the config at the
-> absolute path (`"command": "/home/you/.local/bin/uvx"`), or avoid `uvx` entirely by
-> `pipx install gigwa-mcp` and using `gigwa-mcp` as the `command`.
-
-### Run with Docker
-
-Prefer a container instead of `uvx`/`pipx`? Use the prebuilt image or build it yourself,
-then let your MCP client launch it. The server speaks stdio, so the client starts it with
-`docker run -i` the same way it would start `uvx gigwa-mcp`.
+Run the server as a container instead of `uvx`/`pipx`. It speaks stdio either way, so your
+MCP client starts it with `docker run -i` exactly as it would start `uvx gigwa-mcp`.
 
 **Pull the prebuilt image** (published to the GitHub Container Registry, multi-arch
 `linux/amd64` + `linux/arm64`):
@@ -527,50 +453,13 @@ GIGWA_USER_PROD=your_user
 GIGWA_PASS_PROD=your_password
 ```
 
-## Connecting from an MCP client
-
-For Codex CLI, use [Add it to Codex CLI](#add-it-to-codex-cli) above; the following
-JSON example is for Claude clients, not Codex's TOML configuration.
-
-Add a stdio server entry (Claude Desktop `claude_desktop_config.json` or Claude Code MCP
-settings). If you `pip install`ed into a venv, point `command` at that venv's
-`gigwa-mcp`; with [uv](https://docs.astral.sh/uv/) you can have it fetch and run the
-published package on demand with no separate install:
-
-```json
-{
-  "mcpServers": {
-    "gigwa": {
-      "command": "uvx",
-      "args": ["gigwa-mcp"],
-      "env": {
-        "GIGWA_URL": "http://localhost:8080/gigwa",
-        "GIGWA_USER": "your_user",
-        "GIGWA_PASS": "your_password"
-      }
-    }
-  }
-}
-```
-
-Or with an explicit interpreter path (`"command": "/abs/path/to/venv/bin/gigwa-mcp"`,
-no `args`) if you installed it into a virtual environment.
-
-Credentials live in this config and every tool call authenticates on its own (token
-generated and refreshed automatically), so no per-chat "connect" step is required. To drive
-several Gigwa servers you can either register one entry each (e.g. `gigwa-local`,
-`gigwa-remote`) with its own `GIGWA_URL`/credentials and name the one you mean in the prompt,
-**or** stay in one session and switch at runtime with the `gigwa_connect` tool (see
-*Switching servers mid-conversation* above) — pre-set a `GIGWA_USER_<PROFILE>` /
-`GIGWA_PASS_<PROFILE>` pair per server so no secret is ever typed into the chat.
-
 ## Quick start
 
 You talk to your MCP client in plain language; it calls the matching tool and fills in
 arguments (paths, thresholds, module names) from what you say. A typical first session:
 
 | You ask | Tool called |
-|---------|-------------|
+| --------- | ------------- |
 | "Is my Gigwa up, and what version?" | `gigwa_server_info` |
 | "Connect and list the databases." | `list_content` |
 | "Import `report_snps.xlsx` into a new database `MYDB`, anchored to `reference.sr.mmi`." | `import_dartseq(..., reference_fasta=...)` |
@@ -580,7 +469,7 @@ arguments (paths, thresholds, module names) from what you say. A typical first s
 More example prompts:
 
 | You ask | Tool called |
-|---------|-------------|
+| --------- | ------------- |
 | "Load this VCF into project `trial1`." | `import_vcf` |
 | "Validate then import this individual-metadata TSV." | `validate_metadata` → `import_metadata` |
 | "Find duplicate / clonal accessions." | `qc_duplicate_accessions` |
@@ -601,10 +490,10 @@ tools also accept `output_dir` (defaults to `./gigwa_results/<module>/`), the sc
 args `max_markers` / `method` (`"vcf"` | `"allelematrix"`), and `region`
 (`"chrom"` / `"chrom:start-end"`); see [Performance & scaling](#performance--scaling).
 
-**Connection & import**
+#### Connection & import
 
 | Tool | Key arguments | Returns / writes |
-|------|---------------|------------------|
+| ------ | --------------- | ------------------ |
 | `gigwa_connect` | `url`, `profile?`, `anonymous=False` | switches the active server (verified); creds from env (`GIGWA_USER[_PROFILE]`), never the chat |
 | `gigwa_server_info` | (none) | server version + auth check |
 | `list_content` | (none) | database → project → run hierarchy |
@@ -616,10 +505,10 @@ args `max_markers` / `method` (`"vcf"` | `"allelematrix"`), and `region`
 | `get_import_progress` | `progress_token` | current async-job status |
 | `abort_import` | `progress_token` | requests cancellation of a running process |
 
-**Discovery, search & export**
+#### Discovery, search & export
 
 | Tool | Key arguments | Returns / writes |
-|------|---------------|------------------|
+| ------ | --------------- | ------------------ |
 | `list_variant_sets` | (none) | every run's exact `variantSetDbId` + counts |
 | `list_sequences` | `variant_set_db_id` | chromosomes/contigs (valid `reference_name`s) |
 | `count_variants` | `reference_name?`, `start?`, `end?`, `min_maf?`, `max_maf?`, `max_missing_data?` | server-side match count (no download) |
@@ -636,7 +525,7 @@ args `max_markers` / `method` (`"vcf"` | `"allelematrix"`), and `region`
 **QC & diversity** (output files listed in [Output files](#output-files))
 
 | Tool | Key arguments | Flags / interprets |
-|------|---------------|--------------------|
+| ------ | --------------- | -------------------- |
 | `qc_call_rate` | `min_sample_call_rate=0.5`, `min_marker_call_rate=0.5` | samples/markers below threshold |
 | `qc_heterozygosity` | `outlier_sd=3.0` | Ho outliers; warns if cohort mean Ho implausibly high |
 | `qc_duplicate_accessions` | `similarity_threshold=0.95`, `max_markers=5000` | duplicate/clone groups; warns on degenerate clustering |
@@ -650,10 +539,10 @@ args `max_markers` / `method` (`"vcf"` | `"allelematrix"`), and `region`
 | `diversity_structure` | `k_min=2`, `k_max=10` | suggested K (pseudo-F) + per-K table; warns on degenerate clustering |
 | `diversity_tree` | `max_markers=5000` | UPGMA Newick (`tree.nwk`) |
 
-**Audit**
+#### Audit
 
 | Tool | Key arguments | Returns / writes |
-|------|---------------|------------------|
+| ------ | --------------- | ------------------ |
 | `audit_import_quality` | `variant_set_db_id?` (omit = whole instance), `max_markers=1000`, `max_samples=300`, thresholds | ranked BROKEN/SUSPECT/OK + `import_quality_scan.csv` |
 
 ## Prompts & resources
@@ -664,7 +553,7 @@ support them, and in directories like glama.ai).
 **Prompts** — reusable, argument-driven workflows that chain the right tools for a task:
 
 | Prompt | Arguments | What it walks you through |
-|--------|-----------|---------------------------|
+| -------- | ----------- | --------------------------- |
 | `import_and_qc` | `data_path`, `module`, `project`, `run`, `reference?` | import a DArTseq/VCF dataset, then the standard QC + audit |
 | `diversity_report` | `variant_set_db_id`, `metadata_tsv?`, `group_column?` | summary → PCA/structure → kinship → tree (+ per-group Fst) |
 | `qc_triage` | `variant_set_db_id` | full QC suite + a go/no-go verdict for downstream analysis |
@@ -674,7 +563,7 @@ support them, and in directories like glama.ai).
 **Resources** — read-only endpoints a client can fetch:
 
 | Resource | Contents |
-|----------|----------|
+| ---------- | ---------- |
 | `catalog://tools` | categorised catalog of all tools with their EDAM operation/topic tags |
 | `gigwa://server/info` | configured connection info (target URL + auth mode); no network call |
 
@@ -687,7 +576,7 @@ above. They mirror the five workflow prompts and are discoverable on the
 The capability stays in the MCP server; the skills just sequence and explain the tools.
 
 | Skill | Mirrors prompt | What it does |
-|-------|----------------|--------------|
+| ------- | ---------------- | -------------- |
 | `gigwa-import-and-qc` | `import_and_qc` | import DArTseq/VCF, then the full QC + audit and a clean/not-clean judgement |
 | `gigwa-diversity-report` | `diversity_report` | diversity + structure + relatedness (PCA, structure, kinship, tree; optional by-group/Fst) |
 | `gigwa-qc-triage` | `qc_triage` | full QC suite on an imported run → go/no-go verdict |
@@ -732,7 +621,7 @@ Each analysis writes one or more CSVs (Newick for the tree) under
 `./gigwa_results/<module>/` (the audit writes to `./gigwa_results/`):
 
 | File | Written by | Contents |
-|------|------------|----------|
+| ------ | ------------ | ---------- |
 | `call_rate_samples.csv` / `call_rate_markers.csv` | `qc_call_rate` | per-sample / per-marker call rate + flags |
 | `heterozygosity_samples.csv` | `qc_heterozygosity` | per-sample Ho, z-score, flag |
 | `duplicate_pairs.csv` / `duplicate_groups.csv` | `qc_duplicate_accessions` | IBS pairs ≥ threshold, grouped |
@@ -920,7 +809,7 @@ gigwa_mcp/
   client.py             # GigwaClient: auth, multipart upload, progress, BrAPI calls
   exports.py            # selection export options, response handling, safe downloads
   identifiers.py        # individual/sample/callset identifier resolution
-  server.py             # FastMCP instance + get_client()
+  server.py             # MCPServer instance + get_client()
   importers/
     dartseq.py          # DArTseq xlsx → standard VCF (2-row genotype calling)
     refmap.py           # minimap2 tag → reference mapping
@@ -952,169 +841,65 @@ callset-name mapping with a mock client. The suite needs no live Gigwa server.
 
 ## Changelog
 
+The three most recent releases in detail; older ones in brief. See the
+[releases page](https://github.com/gkanogiannis/Gigwa-MCP/releases) or `git log` for
+commit-level history.
+
+### v1.9.2 — Windows dependency compatibility
+
+- `mappy` is no longer installed automatically on Windows, where it has no wheels and used
+  to make `pip install gigwa-mcp` fail outright. Linux and macOS are unchanged.
+- Reference mapping reports an actionable error when `mappy` is absent; the minimap2 CLI
+  remains available as a backend, and no other tool needs it.
+
 ### v1.9.1 — export and container reliability
 
-- Selection exports now accept both Gigwa response styles: a queued download URL or an
-  immediately returned binary file. Immediate files are written atomically and do not need
-  progress polling or `fetch_export_file`.
-- Docker once again defaults to clean stdio transport; entrypoint diagnostics go to stderr.
-  HTTP mode requires an explicit `GIGWA_MCP_PORT`.
-- Capped VCF and allele-matrix analyses now both use the first N markers in canonical
-  Gigwa search order, making their sampled markers directly comparable.
+- Selection exports accept both Gigwa response styles — a queued download URL, or the file
+  returned immediately. Immediate files are written atomically and skip progress polling.
+- Docker defaults to clean stdio again; HTTP requires an explicit `GIGWA_MCP_PORT`, and
+  entrypoint diagnostics go to stderr.
+- Capped VCF and allele-matrix analyses sample the same first N markers in canonical Gigwa
+  search order, so results from the two backends are directly comparable.
 - Individual/sample resolution preserves hyphenated accession names, and grouping reports
-  identifiers it could not match.
+  identifiers it could not match instead of dropping them silently.
 
 ### v1.9.0 — MCP SDK v2, selection-aware export & metadata endpoints
 
-- **Migrated to the MCP Python SDK v2** (`mcp>=2.1,<3`). v1.x is upstream *maintenance mode,
-  security fixes only*, and v2 carries a newer protocol revision. `FastMCP` becomes
-  `MCPServer`; the transport configuration (`json_response`, `streamable_http_path`,
-  `transport_security`) moved from mutable settings to `streamable_http_app()` parameters;
-  and the server version is now a constructor argument, retiring the private
-  `_mcp_server.version` write. Tools, prompts and resources are unchanged — the registration
-  decorators are identical in v2. Verified with a scripted `initialize`/`tools/list`
-  handshake over both stdio and HTTP.
-- **Selection-aware export** (contributed by @GuilhemSempere, PR #2). `export_genotypes`
-  gains region / variant-type / MAF / missing-data filters, `individuals` and
-  `metadata_fields` selection, and `keep_on_server`; `wait=False` returns immediately with a
-  download URL, pollable via the new `get_export_progress` and retrievable with
-  `fetch_export_file`. `list_export_formats` reports what the instance's export-handler
-  registry actually offers, including each format's variant-type/ploidy restrictions.
-- **Native individual-metadata endpoints** (same PR). `list_metadata_values` and
-  `filter_individuals_by_metadata` use the endpoints behind the Gigwa web UI's own
-  attribute filters, and `get_germplasm` now tries them before BrAPI — so per-individual
-  attributes are found on builds where BrAPI `search/germplasm` returns records with no
-  `additionalInfo` at all.
-- **`germplasm_metadata.csv` gained a `sample_name` column — join on it.** Gigwa's
-  individual id (`germplasm_name`) is *not* the name the analysis tools give a sample: on a
-  13,678-sample ICARDA database none of them agree, yet 10,090 collide numerically with a
-  *different* individual, so joining on `germplasm_name` silently mis-grouped the majority of
-  samples. `sample_name` bridges the two id spaces and resolves 13,678/13,678 there.
-- **Removed the callset fallback from `get_germplasm_metadata`.** With the native endpoint
-  tried first it no longer fires; when the germplasm level really is empty the tool now says
-  so and points at `search_callsets` for sample-level attributes.
-- **Hardened export downloads.** `fetch_export_file` takes a caller-supplied URL and the
-  request carries the session's bearer token, so an absolute URL must now match the
-  configured Gigwa origin; anything else is rejected before a request is made.
-- **Declared `starlette` and `uvicorn`** explicitly — the HTTP transport imports both
-  directly rather than relying on them arriving through `mcp`.
+- Migrated to the MCP Python SDK v2 (`mcp>=2.1,<3`); the 1.x line is upstream maintenance
+  mode. Tools, prompts and resources are unchanged.
+- **Selection-aware export** (@GuilhemSempere, PR #2): `export_genotypes` gains region,
+  variant-type, MAF and missing-data filters plus `individuals` / `metadata_fields`
+  selection. `wait=False` returns a download URL for `get_export_progress` and
+  `fetch_export_file`, and `list_export_formats` reports what the instance actually offers.
+- **Native metadata endpoints** (same PR): `list_metadata_values` and
+  `filter_individuals_by_metadata` use the endpoints behind Gigwa's own attribute filters,
+  so per-individual attributes are found on builds where BrAPI returns none.
+- **`germplasm_metadata.csv` gained a `sample_name` column — join on that, not
+  `germplasm_name`.** Gigwa's individual id is not the name the analysis tools give a
+  sample, so the old join could silently mis-group samples.
+- `fetch_export_file` rejects download URLs that do not match the configured Gigwa origin,
+  so the session's bearer token cannot be sent elsewhere.
 
-### v1.8.0 — callset-level metadata & richer connection info
+### Earlier releases
 
-- **New `search_callsets` tool.** Dumps a run's per-sample (callset) metadata — the resolved
-  `sample_name`, the server's raw `callSetName`, `sampleDbId`, `callSetDbId`, and every key
-  found across the callsets' `additionalInfo` — to `sample_metadata.csv`. This is the
-  sample-level counterpart to `get_germplasm_metadata`.
-- **`get_germplasm_metadata` falls back to the callset level.** Some instances store passport
-  data on the samples rather than on BrAPI germplasm records, where the tool previously
-  reported "no metadata available" despite every sample carrying a full record (observed on
-  the ICARDA durum-wheat database). It now falls back to the callset level and still writes
-  `germplasm_metadata.csv`, reporting an empty result only when neither level exposes any
-  attribute.
-- **Fallback output joins to the analysis tools.** `germplasm_name` holds the resolved sample
-  name (the same rule `GenotypeMatrix.sample_names` uses) and `germplasm_db_id` the
-  `callSetDbId` (`sample_names`' fallback key), so either column groups samples in
-  `diversity_fst` / `diversity_by_group` without manual renaming. Note `metadata_tsv` expects
-  tab-separated input — convert the CSV first.
-- **Pinned the MCP SDK to the 1.x line (`mcp>=1.27,<2`).** The previous `mcp>=1.27` began
-  resolving to mcp 2.x on 2026-07-28, which renamed `FastMCP` to `MCPServer` and removed
-  `mcp.server.fastmcp` — so a fresh `pip install gigwa-mcp` (and any Docker image rebuild)
-  failed on import. The cap restores installability. Note the 1.x line is in maintenance mode
-  upstream and receives security fixes only; migrating to the v2 SDK is tracked separately.
-
-- **`gigwa_server_info` reports account permissions.** When the build's `userInfo` supplies
-  them, the connection summary now also lists the server-side identity, email, and the
-  databases the account may write to / manage / administer. Builds returning an empty
-  `userInfo` are unaffected — every line is guarded.
-
-### v1.7.0 — HTTP transport
-
-- **Streamable HTTP transport.** The server can now run over HTTP in addition to stdio:
-  `python -m gigwa_mcp --port 8184` serves the MCP StreamableHTTP endpoint at `/mcp` (stdio
-  stays the default; `--stdio` is explicit). Adds Docker/entrypoint wiring, DNS-rebinding /
-  allowed-host protection configurable via `GIGWA_MCP_ALLOWED_HOSTS` /
-  `GIGWA_MCP_ALLOWED_ORIGINS` / `GIGWA_MCP_DISABLE_DNS_REBINDING_PROTECTION`, JSON responses
-  for clients that only advertise `application/json`, and tolerance for malformed
-  `notifications/initialized` POSTs. HTTP mode binds loopback (`127.0.0.1`) by default; set
-  `GIGWA_MCP_HOST=0.0.0.0` to accept remote connections (the Docker image sets it). Contributed
-  by @guignonv (PR #1).
-
-### v1.6.0 — runtime server switch
-
-- **Switch servers mid-conversation.** A new `gigwa_connect(url, profile?, anonymous?)` tool
-  re-points every subsequent tool at a different Gigwa instance without restarting the
-  server. The switch is verified with a live round-trip before it takes effect (a failure
-  rolls back to the previous connection) and lasts for the session. **Credentials never pass
-  through the chat:** they are resolved from the environment — the default `GIGWA_USER`/
-  `GIGWA_PASS`, or a named profile's `GIGWA_USER_<PROFILE>`/`GIGWA_PASS_<PROFILE>` — or
-  omitted with `anonymous=true`. See [Configuration](#configuration).
-
-### v1.5.0 — Agent Skills
-
-- **Agent Skills.** A new [`skills/`](skills/) folder ships five Agent Skills (the open
-  [`SKILL.md` standard](https://github.com/agentskills/agentskills)) mirroring the five
-  workflow prompts — `gigwa-import-and-qc`, `gigwa-diversity-report`, `gigwa-qc-triage`,
-  `gigwa-explore-instance`, `gigwa-region-scan` — discoverable on the
-  [LobeHub Skills Marketplace](https://lobehub.com/skills) and other `SKILL.md` directories.
-  [Skills](#skills).
-
-### v1.4.16 — anonymous access & fast-fail timeouts
-
-- **Anonymous access.** `GIGWA_USER`/`GIGWA_PASS` are now optional — omit *both* to connect
-  as Gigwa's anonymous user and run the public/read-only operations an instance exposes
-  (`list_content`, `list_variant_sets`, `search_callsets`, `count_variants`, read-only
-  analyses). Verified against the public `gigwa.icarda.org` demo. Setting only one of the
-  two is now an error.
-- **Fast-fail, configurable connection timeout.** An unreachable/misconfigured Gigwa now
-  errors in seconds instead of hanging for the full request timeout: the TCP-connect phase
-  is capped separately (default 10 s, override with `GIGWA_CONNECT_TIMEOUT`), while
-  read/import/export timeouts are unchanged.
-- **`serverInfo` version.** The server now reports the `gigwa-mcp` package version (it
-  previously surfaced the MCP SDK version).
-
-### v1.3.4 — tool catalog, EDAM annotations & progress reporting
-
-- **Tool catalog** in `server.py`: a central `TOOL_CATALOG` annotates all 28 tools with a
-  category and [EDAM](https://edamontology.org) ontology terms (operation + topic). These
-  ride along as each tool's `_meta` in `tools/list`, and are published as a
-  `catalog://tools` MCP resource — improving discovery/indexing (e.g. by directories such
-  as glama.ai). A test asserts every tool has a catalog entry so the two can't drift.
-- **Progress reporting** for long-running tools: imports, exports, `map_dartseq_to_reference`,
-  and every genotype-load-based QC/diversity tool now stream `notifications/progress` to the
-  client (live import %, "Exporting VCF…", "Fetching genotypes… page k/N", "Parsing…").
-  Implemented with a `@progress_tool` decorator + a small `progress.notify()` bridge, so tool
-  bodies stay synchronous and no `Context` is threaded through the call stack.
-- **Prompts & resources.** Five workflow **prompts** (`import_and_qc`, `diversity_report`,
-  `qc_triage`, `explore_instance`, `region_scan`) and **resources** (`catalog://tools`,
-  `gigwa://server/info`) — so the server advertises the full set
-  of MCP capabilities (tools + prompts + resources). See [Prompts & resources](#prompts--resources).
-
-### v1.2.0 — server-side search, filtered analysis & export
-
-Adds 7 tools (**21 → 28**) that surface more of the Gigwa REST API, plus a genomic-region
-filter on every analysis tool. Live-verified against Gigwa 2.12-RELEASE and 2.13-beta2.
-
-- **Server-side variant search** (no full download): `count_variants` and `search_variants`
-  filter by genomic region, MAF range, and missing-data fraction via Gigwa's GA4GH
-  `variants/search`; `search_variants` writes `variant_search.csv`.
-- **Region-restricted analysis**: every QC & diversity tool now accepts
-  `region` (`"chrom"` or `"chrom:start-end"`, 1-based) to run on a single genomic window.
-- **Discovery & export**: `list_variant_sets` (exact `variantSetDbId`s), `list_sequences`
-  (chromosomes/contigs), and `export_genotypes` (VCF/PLINK/Flapjack; formats vary by build).
-- **Robustness**: `abort_import` (cancel a running process), `get_germplasm_metadata`
-  (pull server-stored per-individual attributes → `germplasm_metadata.csv`), and
-  `gigwa_server_info` now reports the server-side user roles when available.
-
-### v1.1.0 — Docker support
-
-- `Dockerfile` (multi-stage) and `.dockerignore` to build and run the server as a
-  container launched by an MCP client via `docker run -i`. See
-  [Run with Docker](#run-with-docker).
-
-### v1.0.0 — initial release
-
-- 21 tools: connection/inventory, DArTseq/VCF import (with optional reference anchoring)
-  and metadata import, read-only QC and diversity/population-structure analyses, and the
+- **v1.8.0** — `search_callsets` writes per-sample `sample_metadata.csv`;
+  `get_germplasm_metadata` falls back to the callset level; `gigwa_server_info` reports
+  account permissions; SDK pinned to `mcp<2`.
+- **v1.7.0** — Streamable HTTP transport (`--port`) with DNS-rebinding and allowed-host
+  protection; stdio stays the default. Contributed by @guignonv (PR #1).
+- **v1.6.0** — `gigwa_connect` re-points the session at another Gigwa instance
+  mid-conversation, verified before it takes effect. Credentials resolve from the
+  environment, never from the chat.
+- **v1.5.0** — five Agent Skills in [`skills/`](skills/) mirroring the workflow prompts.
+- **v1.4.16** — anonymous access when `GIGWA_USER`/`GIGWA_PASS` are both omitted;
+  fast-fail `GIGWA_CONNECT_TIMEOUT`; `serverInfo` reports the package version.
+- **v1.3.4** — `TOOL_CATALOG` with EDAM annotations and the `catalog://tools` resource;
+  `notifications/progress` from long-running tools; five prompts and two resources.
+- **v1.2.0** — server-side `count_variants` / `search_variants`, a `region` filter on every
+  analysis tool, `list_variant_sets` / `list_sequences` / `export_genotypes`, and
+  `abort_import` (21 → 28 tools).
+- **v1.1.0** — Docker support: a multi-stage `Dockerfile` for `docker run -i`.
+- **v1.0.0** — initial release: 21 tools covering import, QC, diversity and the
   import-quality audit.
 
 ## License & contributing

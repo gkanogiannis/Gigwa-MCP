@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import random
 import shutil
+import sys
+import subprocess
 
 import pytest
 
@@ -56,6 +58,8 @@ def test_maps_forward_and_reverse(tmp_path, backend):
 
     if backend == "cli" and shutil.which("minimap2") is None:
         pytest.skip("minimap2 CLI not installed")
+    if backend == "mappy":
+        pytest.importorskip("mappy")
     results, stats = map_tags_to_reference(markers, fa, min_mapq=20, backend=backend)
     by_id = {r.allele_id: r for r in results}
     assert stats["unique"] == 4 and stats["unmapped"] == 0
@@ -74,6 +78,8 @@ def test_maps_forward_and_reverse(tmp_path, backend):
 
 
 def test_unmapped_tag(tmp_path):
+    if shutil.which("minimap2") is None:
+        pytest.importorskip("mappy")
     rng = random.Random(99)
     placed = _rnd(69, rng)
     fa = _build_reference(tmp_path, [(placed, 1000, 1)])
@@ -82,3 +88,44 @@ def test_unmapped_tag(tmp_path):
     results, stats = map_tags_to_reference(markers, fa, min_mapq=20)
     assert results[0].status == "unmapped"
     assert results[0].pos is None
+
+
+@pytest.mark.parametrize("backend", ["auto", "mappy"])
+def test_missing_mappy_has_actionable_error(monkeypatch, backend):
+    monkeypatch.setitem(sys.modules, "mappy", None)
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    with pytest.raises(ValueError, match="minimap2 CLI.*Linux/Docker"):
+        map_tags_to_reference([], "unused.fa", backend=backend)
+
+
+def test_cli_selected_without_mappy(monkeypatch):
+    from gigwa_mcp.importers import refmap
+
+    monkeypatch.setitem(sys.modules, "mappy", None)
+    monkeypatch.setattr(shutil, "which", lambda _: "/bin/minimap2")
+    expected = ([], {"total": 0})
+    monkeypatch.setattr(refmap, "_map_via_cli", lambda *args, **kwargs: expected)
+    assert map_tags_to_reference([], "unused.fa") == expected
+
+
+def test_unrelated_import_error_preserved(monkeypatch):
+    import builtins
+
+    original = builtins.__import__
+
+    def import_with_broken_dependency(name, *args, **kwargs):
+        if name == "mappy":
+            raise ModuleNotFoundError("missing internal dependency", name="internal_dependency")
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_with_broken_dependency)
+    with pytest.raises(ModuleNotFoundError, match="internal dependency"):
+        map_tags_to_reference([], "unused.fa", backend="mappy")
+
+
+def test_server_import_without_mappy():
+    result = subprocess.run(
+        [sys.executable, "-c", "import sys; sys.modules['mappy'] = None; import gigwa_mcp.server"],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr

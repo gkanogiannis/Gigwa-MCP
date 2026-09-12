@@ -139,7 +139,17 @@ def _finalize(markers, results) -> tuple[list[MappedPosition], dict]:
 
 
 def _map_via_mappy(markers, reference, *, min_mapq, preset):
-    import mappy  # lazy
+    try:
+        import mappy  # lazy: other tools do not need the alignment backend
+    except ModuleNotFoundError as exc:
+        if exc.name != "mappy":
+            raise
+        raise ValueError(
+            "The mappy alignment backend is unavailable: it has no Windows wheels, so it is "
+            "not installed there. Install the minimap2 CLI and put it on PATH -- the default "
+            "backend='auto' then picks it up automatically -- or run reference mapping on "
+            "Linux/Docker. No other tool needs mappy."
+        ) from exc
 
     aligner = mappy.Aligner(str(reference), preset=preset)
     if not aligner:
