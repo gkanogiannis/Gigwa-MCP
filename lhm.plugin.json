@@ -6,6 +6,7 @@
   "author": "Anestis Gkanogiannis",
   "authorUrl": "https://github.com/gkanogiannis",
   "homepage": "https://github.com/gkanogiannis/Gigwa-MCP",
+  "gitUrl": "https://github.com/gkanogiannis/Gigwa-MCP",
   "category": "science-education",
   "tags": [
     "gigwa",
@@ -16,5 +17,38 @@
     "brapi",
     "ga4gh",
     "population-genetics"
+  ],
+  "skills": [
+    {
+      "id": "gigwa-import-and-qc",
+      "name": "Gigwa Import and QC Workflow",
+      "description": "Guides agent through importing DArTseq/VCF files, running QC benchmarks, and evaluating pipeline health.",
+      "src": "skills/gigwa-import-and-qc/SKILL.md"
+    },
+    {
+      "id": "gigwa-diversity-report",
+      "name": "Gigwa Diversity Report Analyzer",
+      "description": "Orchestrates multi-step population genetics metrics like PCA profiling, kinship matrices, and UPGMA trees.",
+      "src": "skills/gigwa-diversity-report/SKILL.md"
+    },
+    {
+      "id": "gigwa-qc-triage",
+      "name": "Gigwa QC Triage Assistant",
+      "description": "Executes full quality control sequences on imported genomic sets to deliver clean triage verdicts.",
+      "src": "skills/gigwa-qc-triage/SKILL.md"
+    },
+    {
+      "id": "gigwa-explore-instance",
+      "name": "Gigwa Instance Explorer",
+      "description": "Conducts a top-to-bottom instance health audit and catalogues overall content topology.",
+      "src": "skills/gigwa-explore-instance/SKILL.md"
+    },
+    {
+      "id": "gigwa-region-scan",
+      "name": "Gigwa Local Region Scanner",
+      "description": "Investigates genomic variant density and isolates micro-diversity patterns inside specific windows.",
+      "src": "skills/gigwa-region-scan/SKILL.md"
+    }
   ]
 }
+
