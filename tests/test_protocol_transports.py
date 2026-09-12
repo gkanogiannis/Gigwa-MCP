@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import os
-import select
+import queue
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 import httpx
@@ -20,14 +21,51 @@ INITIALIZE = {
 }
 
 
+def _stdout_queue(process: subprocess.Popen) -> "queue.Queue[str | None]":
+    """Lines from the child's stdout, pumped by a background thread.
+
+    A thread rather than ``select``: on Windows ``select`` accepts only sockets, so polling
+    a subprocess pipe with it raises ``OSError: [WinError 10038]``. The reader is created
+    once per process and cached on it, because a second one would steal lines from the
+    first. ``None`` is queued at EOF.
+    """
+    existing = getattr(process, "_stdout_lines", None)
+    if existing is not None:
+        return existing
+    lines: "queue.Queue[str | None]" = queue.Queue()
+
+    def pump() -> None:
+        for line in process.stdout:
+            lines.put(line)
+        lines.put(None)
+
+    threading.Thread(target=pump, daemon=True).start()
+    process._stdout_lines = lines
+    return lines
+
+
 def _read_response(process: subprocess.Popen, request_id: int, timeout: float = 10) -> dict:
+    lines = _stdout_queue(process)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        ready, _, _ = select.select([process.stdout], [], [], 0.2)
-        if ready:
-            message = json.loads(process.stdout.readline())
-            if message.get("id") == request_id:
-                return message
+        try:
+            line = lines.get(timeout=0.2)
+        except queue.Empty:
+            continue
+        if line is None:  # child closed stdout; it has died or finished
+            break
+        message = json.loads(line)
+        if message.get("id") == request_id:
+            return message
+    # Surface why, rather than only that it timed out: a child that failed to start says so
+    # on stderr, and that is far more useful than a bare timeout on a platform we cannot
+    # reproduce locally.
+    if process.poll() is not None:
+        stderr = process.stderr.read() if process.stderr else ""
+        raise AssertionError(
+            f"server exited with code {process.returncode} before answering request "
+            f"{request_id}; stderr:\n{stderr}"
+        )
     raise AssertionError(f"timed out waiting for JSON-RPC response {request_id}")
 
 
