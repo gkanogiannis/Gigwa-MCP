@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -18,8 +19,24 @@ VCF = "\n".join([
 
 
 class FakeClient:
+    def __init__(self):
+        # (endpoint, variant_set_db_id, kwargs) per fetch call, in order -- lets tests
+        # assert *which* export path was actually used, not just the parsed result.
+        self.calls: list[tuple[str, str, dict]] = []
+
     def export_variantset_vcf(self, vs, dest, **kw):
+        self.calls.append(("brapi", vs, kw))
         Path(dest).write_text(VCF)
+        return Path(dest)
+
+    def export_selection(self, vs, dest, **kw):
+        # Real Gigwa zips /gigwa/exportData's VCF output (a HOW_TO_CITE.txt alongside
+        # the actual .vcf member) -- unlike BrAPI's plain body. Mirror that here so this
+        # fixture can't drift back to plain text and hide the same bug again.
+        self.calls.append(("selection", vs, kw))
+        with zipfile.ZipFile(dest, "w") as zf:
+            zf.writestr("HOW_TO_CITE.txt", "cite Gigwa")
+            zf.writestr("export.vcf", VCF)
         return Path(dest)
 
     def search_callsets(self, vs):
@@ -31,7 +48,8 @@ class FakeClient:
 
 def test_load_genotypes_parses_and_maps_names(tmp_path):
     clear_cache()
-    gm = load_genotypes(FakeClient(), "VS§1§run", cache_dir=tmp_path)
+    client = FakeClient()
+    gm = load_genotypes(client, "VS§1§run", cache_dir=tmp_path)
     assert gm.n_variants == 2
     assert gm.n_samples == 2
     assert gm.sample_ids == ["S1", "S2"]
@@ -39,6 +57,8 @@ def test_load_genotypes_parses_and_maps_names(tmp_path):
     assert gm.gt.shape == (2, 2, 2)
     # m2/S2 is missing
     assert bool(gm.gt.is_missing()[1, 1])
+    # No region/individuals filter -> whole-run BrAPI export, callset-raw, unchanged.
+    assert client.calls == [("brapi", "VS§1§run", {})]
 
 
 class SampleDbIdClient(FakeClient):
@@ -104,13 +124,95 @@ def test_parse_region():
 def test_load_genotypes_region_filter(tmp_path):
     clear_cache()
     # VCF fixture has chrom "1" at pos 100 and 200.
-    gm = load_genotypes(FakeClient(), "VS§1§reg", cache_dir=tmp_path, region="1:150-250")
+    client = FakeClient()
+    gm = load_genotypes(client, "VS§1§reg", cache_dir=tmp_path, region="1:150-250")
     assert gm.n_variants == 1
     assert int(gm.pos[0]) == 200
+    # BrAPI has no region parameter at all -- a region filter can only be served
+    # server-side via the selection-aware export, not the whole-run BrAPI path.
+    assert client.calls[-1] == (
+        "selection", "VS§1§reg",
+        {"reference_name": "1", "start": 150, "end": 250, "exported_individuals": None},
+    )
 
     clear_cache()
-    none = load_genotypes(FakeClient(), "VS§1§reg2", cache_dir=tmp_path, region="2")
+    client2 = FakeClient()
+    none = load_genotypes(client2, "VS§1§reg2", cache_dir=tmp_path, region="2")
     assert none.n_variants == 0
+    assert client2.calls[-1][0] == "selection"
+
+
+def test_load_genotypes_individuals_filter_routes_to_selection_export(tmp_path):
+    """BrAPI can't filter by individual either -- same rule, the other trigger."""
+    clear_cache()
+    client = FakeClient()
+    gm = load_genotypes(client, "VS§1§ind", cache_dir=tmp_path, individuals=["acc1"])
+    assert gm.n_variants == 2  # fixture is unfiltered; only the routing is under test
+    assert client.calls[-1] == (
+        "selection", "VS§1§ind",
+        {"reference_name": None, "start": None, "end": None, "exported_individuals": ["acc1"]},
+    )
+
+
+def test_load_genotypes_filtered_results_are_cached_separately(tmp_path):
+    """Different (region, individuals) combinations -- and the unfiltered fetch -- must
+    never share a cache entry or silently substitute for one another."""
+    clear_cache()
+    client = FakeClient()
+
+    load_genotypes(client, "VS§1§sep", cache_dir=tmp_path)  # unfiltered: BrAPI
+    load_genotypes(client, "VS§1§sep", cache_dir=tmp_path, individuals=["acc1"])
+    load_genotypes(client, "VS§1§sep", cache_dir=tmp_path, individuals=["acc2"])
+    load_genotypes(client, "VS§1§sep", cache_dir=tmp_path, region="1")
+    assert [c[0] for c in client.calls] == ["brapi", "selection", "selection", "selection"]
+    # four calls, four genuinely distinct filter signatures -- none reused another's fetch
+    signatures = [repr(c[2]) for c in client.calls]
+    assert len(set(signatures)) == len(signatures) == 4
+
+    # Repeating an already-fetched filter combination hits the in-process cache (no
+    # new fetch) -- same guarantee the unfiltered/allelematrix paths already had.
+    calls_before = len(client.calls)
+    load_genotypes(client, "VS§1§sep", cache_dir=tmp_path, individuals=["acc1"])
+    assert len(client.calls) == calls_before
+
+
+def test_ensure_plain_vcf_passes_through_non_zip(tmp_path):
+    from gigwa_mcp.analysis.genotypes import _ensure_plain_vcf
+
+    plain = tmp_path / "plain.vcf"
+    plain.write_text(VCF)
+    assert _ensure_plain_vcf(plain) == plain  # BrAPI's output: already plain, no-op
+
+
+def test_ensure_plain_vcf_unwraps_zipped_plain_member(tmp_path):
+    """/gigwa/exportData with fmt=VCF: HOW_TO_CITE.txt + a plain .vcf member."""
+    from gigwa_mcp.analysis.genotypes import _ensure_plain_vcf
+
+    zipped = tmp_path / "export.vcf"
+    with zipfile.ZipFile(zipped, "w") as zf:
+        zf.writestr("HOW_TO_CITE.txt", "cite Gigwa")
+        zf.writestr("export.vcf", VCF)
+
+    result = _ensure_plain_vcf(zipped)
+    assert result != zipped
+    assert result.read_text() == VCF
+
+
+def test_ensure_plain_vcf_unwraps_zipped_gzipped_member(tmp_path):
+    """/gigwa/exportData with fmt=VCF.gz: every export is zipped, even this one -- the
+    zip's inner member is itself bgzipped, so it needs a second decompression step."""
+    import gzip as _gzip
+
+    from gigwa_mcp.analysis.genotypes import _ensure_plain_vcf
+
+    zipped = tmp_path / "export.vcf.gz"
+    with zipfile.ZipFile(zipped, "w") as zf:
+        zf.writestr("HOW_TO_CITE.txt", "cite Gigwa")
+        zf.writestr("export.vcf.gz", _gzip.compress(VCF.encode()))
+
+    result = _ensure_plain_vcf(zipped)
+    assert result != zipped
+    assert result.read_text() == VCF  # decompressed, not just unzipped
 
 
 # --- allelematrix extraction path -------------------------------------------

@@ -275,9 +275,14 @@ def export_genotypes(
                 f"({size:,} bytes{media}); no progress polling or fetch is needed."
             )
         export_url = result.download_url
+        # Gigwa tracks one "current export" per token, not per session -- if another
+        # export (concurrent, or a still-running retry) shares the default token,
+        # get_export_progress()'s no-argument fallback would report *that* one's
+        # status instead of this one's. Passing export_token pins the check to this
+        # specific export.
         return (
             f"Export started for {variant_set_db_id} as {format} (not waiting).\n"
-            f"Check status with get_export_progress().\n"
+            f'Check status with get_export_progress(export_token="{result.token}").\n'
             f'Once complete: fetch_export_file(download_url="{export_url}", output_path="{output_path}").'
         )
 
@@ -311,16 +316,19 @@ def export_genotypes(
 
 
 @mcp.tool()
-def get_export_progress() -> str:
-    """Report the status of the current session's most recent export (started with
-    ``export_genotypes(..., wait=False)``).
+def get_export_progress(export_token: str | None = None) -> str:
+    """Report the status of an export started with ``export_genotypes(..., wait=False)``.
 
-    Unlike imports, an export isn't tracked by a token you pass around — Gigwa ties it to
-    the session's own auth token, so there is exactly one "current export" per connection
-    and this takes no arguments.
+    Gigwa tracks one "current export" *per token*, not per session -- so if more than
+    one export might be in flight at once (a deliberate concurrent run, or simply a
+    retry issued before an earlier attempt's server-side thread actually finished),
+    checking with no argument is ambiguous: it falls back to this session's shared
+    token, which could belong to any of them. Pass the ``export_token`` that
+    ``export_genotypes(..., wait=False)`` returned to check that *specific* export;
+    omit it only when you know just one export is in play.
     """
     client = get_client()
-    status = client.export_progress()
+    status = client.export_progress(token=export_token)
     if status is None:
         return "No export progress reported (none started this session, or it already finished)."
     if status.error:
@@ -332,7 +340,7 @@ def get_export_progress() -> str:
     return f"Export in progress: {status.summary()}"
 
 
-@mcp.tool()
+@progress_tool()
 def fetch_export_file(download_url: str, output_path: str) -> str:
     """Download a completed export — the URL ``export_genotypes(..., wait=False)`` returned
     — once ``get_export_progress`` reports it complete."""

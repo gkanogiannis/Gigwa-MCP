@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pandas as pd
@@ -12,6 +11,7 @@ from ..analysis.results import resolve_output_dir, write_csv
 from ..client import ProgressStatus
 from ..errors import GigwaAPIError, GigwaError
 from ..server import get_client, mcp, progress_tool
+from . import load_json_arg
 
 
 def _render_validation(result: object) -> str:
@@ -278,7 +278,7 @@ def list_metadata_values(variant_set_db_id: str) -> str:
 
 
 @mcp.tool()
-def filter_individuals_by_metadata(variant_set_db_id: str, filters_json: str) -> str:
+def filter_individuals_by_metadata(variant_set_db_id: str, filters_json: str | dict) -> str:
     """Select individuals whose stored metadata matches the given field/value filters.
 
     ``filters_json`` is a JSON object mapping each metadata field name (see
@@ -294,7 +294,7 @@ def filter_individuals_by_metadata(variant_set_db_id: str, filters_json: str) ->
     client = get_client()
     module = module_of(variant_set_db_id)
     try:
-        filters = json.loads(filters_json)
+        filters = load_json_arg(filters_json)
     except (ValueError, TypeError) as exc:
         raise ValueError(f"filters_json is not valid JSON: {exc}") from exc
     if not isinstance(filters, dict):

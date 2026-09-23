@@ -83,7 +83,7 @@ def test_stdio_initialize_and_tools_list():
         process.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}) + "\n")
         process.stdin.flush()
         tools = _read_response(process, 2)["result"]["tools"]
-        assert len(tools) == 35
+        assert len(tools) == 36
     finally:
         process.terminate()
         process.wait(timeout=5)
@@ -125,7 +125,7 @@ def test_http_initialize_notification_and_tools_list():
             headers=session_headers,
         )
         assert listed.status_code == 200
-        assert len(listed.json()["result"]["tools"]) == 35
+        assert len(listed.json()["result"]["tools"]) == 36
     finally:
         process.terminate()
         process.wait(timeout=5)

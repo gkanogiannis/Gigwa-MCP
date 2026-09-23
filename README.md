@@ -127,7 +127,8 @@ never modify the data in Gigwa.
 | `diversity_fst` | Pairwise Weir & Cockerham Fst between groups |
 | `diversity_by_group` | Per-population He, Ho, Fis, MAF, % polymorphic + (rarefied) allelic richness |
 | `diversity_core_collection` | Greedy allele-coverage core: smallest accession set capturing the most diversity |
-| `diversity_structure` | Lightweight ancestry with PCA + K-means, pseudo-F suggests K (no ADMIXTURE binary) |
+| `diversity_structure` | Lightweight ancestry with PCA + K-means, pseudo-F suggests K (pure Python, all platforms) |
+| `diversity_admixture` | Model-based ancestry (Q matrix) via the real ADMIXTURE binary, CV-picked K, or supervised against reference groups (Linux/macOS) |
 | `diversity_tree` | UPGMA dendrogram of accessions from IBS distance, written as Newick (`tree.nwk`) |
 
 Every QC & diversity tool also accepts `region` (`"chrom"` or `"chrom:start-end"`, 1-based;
@@ -481,6 +482,8 @@ More example prompts:
 | "Compare diversity (He/Ho/allelic richness) across my populations." | `diversity_by_group` |
 | "Pick a core collection of ~10% that captures the most diversity." | `diversity_core_collection` |
 | "How many genetic clusters are in this collection?" | `diversity_structure` |
+| "Run ADMIXTURE / give me ancestry proportions per accession." | `diversity_admixture` |
+| "Estimate the admixed accessions' ancestry using the other groups as reference populations." | `diversity_admixture` with `reference_groups_json` |
 | "Build a UPGMA tree of the accessions." | `diversity_tree` |
 
 ## Tool reference
@@ -537,6 +540,7 @@ args `max_markers` / `method` (`"vcf"` | `"allelematrix"`), and `region`
 | `diversity_by_group` | `groups_json?` / `metadata_tsv`+`group_column` | per-group He/Ho/Fis/MAF/%poly/allelic richness |
 | `diversity_core_collection` | `size?` **or** `fraction=0.1` | core set + % of diversity captured |
 | `diversity_structure` | `k_min=2`, `k_max=10` | suggested K (pseudo-F) + per-K table; warns on degenerate clustering |
+| `diversity_admixture` | `k_min=2`, `k_max=6`, `seed=1`, `threads?`, `reference_groups_json?` | Q matrix at CV-best K + CV error per K; with `reference_groups_json`, one `--supervised` run at K = number of groups (Linux/macOS only) |
 | `diversity_tree` | `max_markers=5000` | UPGMA Newick (`tree.nwk`) |
 
 #### Audit
@@ -633,6 +637,9 @@ Each analysis writes one or more CSVs (Newick for the tree) under
 | `diversity_by_group.csv` | `diversity_by_group` | per-group He/Ho/Fis/MAF/%poly/allelic richness |
 | `core_collection.csv` | `diversity_core_collection` | rank, accession, cumulative allele coverage |
 | `structure_clusters.csv` | `diversity_structure` | per-sample cluster + PC coords |
+| `admixture_Q_K<k>.csv` | `diversity_admixture` | per-sample ancestry fractions at the CV-best K |
+| `admixture_cv.csv` | `diversity_admixture` | cross-validation error / log-likelihood per K evaluated |
+| `admixture_supervised_Q.csv` | `diversity_admixture` (supervised) | per-sample ancestry fractions, one column per reference group, plus each sample's `reference_group` (blank for targets) |
 | `tree.nwk` | `diversity_tree` | UPGMA tree (Newick) |
 | `import_quality_scan.csv` | `audit_import_quality` | one row per run: status + diagnostics + reasons |
 | `variant_search.csv` | `search_variants` | matching variants (id, chrom, pos, ref, alt) |
@@ -724,8 +731,13 @@ Phylo.draw(Phylo.read("gigwa_results/MYDB/tree.nwk", "newick"))
 - **`diversity_structure` is a lightweight heuristic.** It is PCA + K-means with a
   pseudo-F (Calinski-Harabasz) K suggestion; there is no true admixture model. On weakly
   or continuously structured data pseudo-F tends toward `k_max`; the per-K table is the
-  real output and the tool warns when clustering is degenerate. For formal ancestry use a
-  dedicated tool (ADMIXTURE / sNMF) on an exported VCF.
+  real output and the tool warns when clustering is degenerate. `diversity_admixture` runs
+  the real model-based ADMIXTURE tool instead, when that stronger result is needed.
+- **`diversity_admixture` needs Linux or macOS.** It fetches the official ADMIXTURE
+  binary (statically linked, no installer) into `~/.cache/gigwa-mcp/admixture` on first
+  use; the author publishes no native Windows build, so on Windows run it via WSL, Linux,
+  or Docker. ADMIXTURE is free for academic/non-profit use — commercial use requires a
+  license from the author (see https://dalexander.github.io/admixture).
 - **Diploid-biallelic assumptions** in places (IBS dosage 0/1/2, collapsed-token decode).
 - **Grouping uses a metadata TSV, not server attributes.** Some Gigwa builds do not expose
   BrAPI germplasm/sample/attribute endpoints, so `diversity_fst` / `diversity_by_group`

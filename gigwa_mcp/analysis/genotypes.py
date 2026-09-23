@@ -1,8 +1,32 @@
 """Genotype data-access layer: pull genotypes out of Gigwa into a GenotypeArray.
 
-Primary path is VCF export (`GigwaClient.export_variantset_vcf`) parsed with
-scikit-allel. The exported VCF is cached on disk and the parsed matrix is cached
-in-process, so running several analysis tools over one variant set downloads and
+Two on-the-wire paths, chosen automatically by what the caller asks for -- this is not
+a performance knob the caller sets, it follows from two independent facts:
+
+* **Can the request even be filtered server-side?** BrAPI's per-variant-set VCF export
+  (`GigwaClient.export_variantset_vcf`, ``/brapi/v2/variantsets/{id}/export/vcf``) has no
+  region or individual parameters at all -- it always returns the whole run. So the
+  moment ``region`` or ``individuals`` is given, BrAPI cannot serve it and we route
+  through Gigwa's selection-aware export instead (`GigwaClient.export_selection`,
+  ``/gigwa/exportData`` -- the same endpoint ``export_genotypes``/the Gigwa web UI use),
+  which supports both server-side.
+* **Callset-raw or individual-merged?** BrAPI's export is scoped to *this run* and
+  returns one VCF column per **callset**, exactly as imported. ``exported_individuals``
+  on the selection-aware export instead resolves each name to *that individual's*
+  callsets -- server-side, and potentially across other runs -- collapsing multiple
+  callsets into one identity. That's an unavoidable consequence of filtering by
+  individual (BrAPI has no such filter to fall back to), not a free efficiency choice:
+  passing ``individuals`` trades run-scoped callset fidelity for individual identity.
+  ``region`` alone does not trigger this -- it only restricts positions, not which
+  callsets are resolved.
+
+So: no ``region``/``individuals`` -> BrAPI (whole run, callset-raw, unchanged from
+before). Either one set -> selection-aware export (filtered server-side; merged-by-
+individual only if ``individuals`` was actually supplied).
+
+Both paths are parsed with scikit-allel; the exported VCF is cached on disk (one cache
+file per (variant set, filter) combination) and the parsed matrix is cached in-process,
+so running several analysis tools over the same variant set + filters downloads and
 parses it only once. The alternative paged ``search/allelematrix`` path is likewise
 session-cached (keyed by the variant set plus its caps), so a sequence of tools over
 the same large set issues the paged HTTP round-trips only once. VCF sample IDs are
@@ -12,11 +36,15 @@ Gigwa callset DbIds (``MODULE§N``); we map them to accession names via
 
 from __future__ import annotations
 
+import gzip
+import hashlib
 import re
 import tempfile
 import warnings
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 import allel
 import numpy as np
@@ -29,6 +57,12 @@ from ..progress import notify
 
 # In-process cache of the full (un-subsampled) VCF-path matrix, keyed by variantSetDbId.
 _SESSION_CACHE: dict[str, "GenotypeMatrix"] = {}
+
+# In-process cache of the selection-aware (region/individuals-filtered) VCF-path matrix,
+# keyed by (variantSetDbId, region, sorted individuals) -- a distinct cache from
+# _SESSION_CACHE because a filtered result is a different (and, when individuals is set,
+# differently-scoped) dataset, never a substitute for the full one or vice versa.
+_FILTERED_SESSION_CACHE: dict[tuple, "GenotypeMatrix"] = {}
 
 # In-process cache of allelematrix-path matrices. Keyed by the params that determine the
 # result — (variantSetDbId, max_markers, max_samples, with_depth) — since the caps are
@@ -111,13 +145,10 @@ def _cache_dir(cache_dir: str | Path | None) -> Path:
     return base
 
 
-def _download_and_parse(
-    client: GigwaClient, variant_set_db_id: str, cache_dir: str | Path | None
-) -> GenotypeMatrix:
-    vcf_path = _cache_dir(cache_dir) / f"{_safe_name(variant_set_db_id)}.vcf"
-    if not (vcf_path.exists() and vcf_path.stat().st_size > 64):
-        client.export_variantset_vcf(variant_set_db_id, vcf_path)
-
+def _parse_vcf(client: GigwaClient, variant_set_db_id: str, vcf_path: Path) -> GenotypeMatrix:
+    """Parse an already-downloaded VCF (BrAPI or selection-export, filtered or not) into
+    a :class:`GenotypeMatrix`. Shared by both fetch paths -- parsing doesn't care which
+    endpoint produced the file."""
     notify("Parsing genotypes…")
     with warnings.catch_warnings():
         # Gigwa's export omits the ##FORMAT=<ID=GT> header line; GT still parses fine.
@@ -145,6 +176,86 @@ def _download_and_parse(
         sample_names=sample_names,
         variant_set_db_id=variant_set_db_id,
     )
+
+
+def _download_and_parse(
+    client: GigwaClient, variant_set_db_id: str, cache_dir: str | Path | None
+) -> GenotypeMatrix:
+    """Whole-run, callset-raw fetch via BrAPI. Used only when neither ``region`` nor
+    ``individuals`` was requested -- see the module docstring for why."""
+    vcf_path = _cache_dir(cache_dir) / f"{_safe_name(variant_set_db_id)}.vcf"
+    if not (vcf_path.exists() and vcf_path.stat().st_size > 64):
+        client.export_variantset_vcf(variant_set_db_id, vcf_path)
+    return _parse_vcf(client, variant_set_db_id, vcf_path)
+
+
+def _filter_fingerprint(region: str | None, individuals: Sequence[str] | None) -> str:
+    key = (region or "") + "|" + (",".join(sorted(individuals)) if individuals else "")
+    return hashlib.sha1(key.encode()).hexdigest()[:12]
+
+
+def _download_and_parse_filtered(
+    client: GigwaClient,
+    variant_set_db_id: str,
+    *,
+    region: str | None,
+    individuals: Sequence[str] | None,
+    cache_dir: str | Path | None,
+) -> GenotypeMatrix:
+    """Filtered fetch via Gigwa's selection-aware export (``/gigwa/exportData``), used
+    whenever ``region`` and/or ``individuals`` was requested -- BrAPI has no filter
+    parameters to serve either with. Passing ``individuals`` resolves those names to
+    their callsets server-side (see the module docstring): the result is scoped by
+    individual identity, not by this run's raw callsets.
+
+    Cached separately from the whole-run BrAPI path, one file per distinct
+    (variant set, region, individuals) combination, so different filters -- and the
+    unfiltered dataset -- never collide or get silently substituted for each other.
+    """
+    fingerprint = _filter_fingerprint(region, individuals)
+    vcf_path = _cache_dir(cache_dir) / f"{_safe_name(variant_set_db_id)}__{fingerprint}.vcf"
+    if not (vcf_path.exists() and vcf_path.stat().st_size > 64):
+        chrom = start = end = None
+        if region:
+            chrom, start, end = parse_region(region)
+        client.export_selection(
+            variant_set_db_id,
+            vcf_path,
+            reference_name=chrom,
+            start=start,
+            end=end,
+            exported_individuals=list(individuals) if individuals else None,
+        )
+    return _parse_vcf(client, variant_set_db_id, _ensure_plain_vcf(vcf_path))
+
+
+def _ensure_plain_vcf(path: Path) -> Path:
+    """Every ``/gigwa/exportData`` response -- ``VCF`` *and* ``VCF.gz`` alike -- comes
+    back as an outer zip (a ``HOW_TO_CITE.txt`` alongside the real ``.vcf``/``.vcf.gz``
+    member), unlike BrAPI's plain VCF body. Unwrap it before ``allel.read_vcf`` ever
+    sees it, decompressing an inner ``.vcf.gz`` member too so the result is always a
+    plain, uncompressed VCF regardless of which format produced it -- one contract for
+    ``_parse_vcf`` to rely on. No-op for BrAPI's already-plain output. Idempotent: the
+    extracted sibling file is itself treated as a cache entry, so repeat calls don't
+    re-extract."""
+    with open(path, "rb") as f:
+        if f.read(2) != b"PK":
+            return path
+    extracted = path.with_name(path.stem + "__unzipped.vcf")
+    if not (extracted.exists() and extracted.stat().st_size > 64):
+        with zipfile.ZipFile(path) as zf:
+            members = [n for n in zf.namelist() if n.lower().endswith((".vcf", ".vcf.gz"))]
+            if not members:
+                raise GigwaError(
+                    f"Zipped export {path.name} contains no .vcf/.vcf.gz member "
+                    f"(found: {zf.namelist()})."
+                )
+            member = members[0]
+            data = zf.read(member)
+        if member.lower().endswith(".gz"):
+            data = gzip.decompress(data)
+        extracted.write_bytes(data)
+    return extracted
 
 
 def _decode_gt_token(
@@ -446,21 +557,36 @@ def load_genotypes(
     use_cache: bool = True,
     method: str = "vcf",
     region: str | None = None,
+    individuals: Sequence[str] | None = None,
 ) -> GenotypeMatrix:
     """Load a variant set's genotypes as a :class:`GenotypeMatrix`.
 
-    ``method="vcf"`` (default) exports the whole variant set once, parses it with
-    scikit-allel and caches it in-process; ``max_markers`` selects the first N IDs in
-    canonical Gigwa search order. ``method="allelematrix"`` pulls those same IDs via paged
-    BrAPI ``search/allelematrix`` instead — useful for subset/scale extraction
-    (honours ``max_markers`` and ``max_samples`` server-side); it is session-cached
-    per ``(variant set, max_markers, max_samples, with_depth)`` so repeat tool calls
-    with the same caps reuse the matrix. ``max_samples`` only applies to the
-    allelematrix path.
+    ``method="vcf"`` (default): fetches via VCF, exactly one of two ways, decided for you
+    -- see the module docstring for the reasoning:
 
-    ``region`` (``"chrom"`` or ``"chrom:start-end"``, 1-based) restricts the matrix to a
-    genomic window; it is applied to the (cached) full matrix before any ``max_markers``
-    selection, so capped markers are chosen from within the window.
+    * ``region`` and ``individuals`` both omitted -> the whole run via BrAPI, one column
+      per callset, exactly as imported. Cached once per variant set.
+    * either one given -> Gigwa's selection-aware export (``/gigwa/exportData``),
+      filtered server-side, since BrAPI has no filter parameters to serve it with.
+      Cached once per (variant set, region, individuals) combination -- never shares a
+      cache entry with the unfiltered fetch or a different filter combination.
+
+    ``region`` (``"chrom"`` or ``"chrom:start-end"``, 1-based) restricts by position only.
+    ``individuals`` additionally resolves those names to their callsets *server-side* --
+    which, unlike the plain BrAPI export, merges by individual identity (potentially
+    across runs) rather than preserving this run's raw callset columns. Pass it only when
+    that's the identity you want; for callset-faithful data, filter after the fact instead
+    (e.g. subset the raw BrAPI VCF yourself) rather than via ``individuals``.
+
+    ``method="allelematrix"`` pulls the same data via paged BrAPI ``search/allelematrix``
+    instead — useful for subset/scale extraction (honours ``max_markers`` and
+    ``max_samples`` server-side, and is always callset-level, never merged by
+    individual); it is session-cached per ``(variant set, max_markers, max_samples,
+    with_depth, region)`` so repeat tool calls with the same caps reuse the matrix.
+    ``max_samples``/``individuals`` do not apply to this path.
+
+    Either way, ``max_markers`` selects the first N IDs in canonical Gigwa search order,
+    applied after ``region``, so capped markers are chosen from within the window.
     """
     selected_ids = (
         _canonical_variant_ids(client, variant_set_db_id, max_markers, region)
@@ -483,12 +609,25 @@ def load_genotypes(
             return _select_variant_ids(gm, selected_ids)
         return _apply_region(gm, region)
 
-    full = _SESSION_CACHE.get(variant_set_db_id) if use_cache else None
-    if full is None:
-        full = _download_and_parse(client, variant_set_db_id, cache_dir)
-        if use_cache:
-            _SESSION_CACHE[variant_set_db_id] = full
-    gm = _apply_region(full, region)
+    if region is not None or individuals is not None:
+        # Either filter means BrAPI can't serve this request -- see module docstring.
+        key = (variant_set_db_id, region, tuple(sorted(individuals)) if individuals else None)
+        gm = _FILTERED_SESSION_CACHE.get(key) if use_cache else None
+        if gm is None:
+            gm = _download_and_parse_filtered(
+                client, variant_set_db_id, region=region, individuals=individuals,
+                cache_dir=cache_dir,
+            )
+            if use_cache:
+                _FILTERED_SESSION_CACHE[key] = gm
+    else:
+        gm = _SESSION_CACHE.get(variant_set_db_id) if use_cache else None
+        if gm is None:
+            gm = _download_and_parse(client, variant_set_db_id, cache_dir)
+            if use_cache:
+                _SESSION_CACHE[variant_set_db_id] = gm
+
+    gm = _apply_region(gm, region)  # no-op when already filtered server-side by region
     if selected_ids is not None:
         return _select_variant_ids(gm, selected_ids)
     return gm
@@ -496,4 +635,5 @@ def load_genotypes(
 
 def clear_cache() -> None:
     _SESSION_CACHE.clear()
+    _FILTERED_SESSION_CACHE.clear()
     _AM_SESSION_CACHE.clear()

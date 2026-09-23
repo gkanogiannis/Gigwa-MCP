@@ -50,3 +50,10 @@ def test_groups_json_reports_unmatched_members():
     groups, unmatched = _resolve_groups(_gm(), '{"A":["acc1","missing"],"B":["S2"]}')
     assert groups == {"A": [0], "B": [1]}
     assert unmatched == ["missing"]
+
+
+def test_groups_json_accepts_decoded_object():
+    # some MCP clients decode a JSON-string argument into an object before sending it
+    groups, unmatched = _resolve_groups(_gm(), {"A": ["acc1", "missing"], "B": ["S2"]})
+    assert groups == {"A": [0], "B": [1]}
+    assert unmatched == ["missing"]

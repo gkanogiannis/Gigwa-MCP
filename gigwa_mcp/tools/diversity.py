@@ -7,15 +7,16 @@ summary. Nothing is written back to Gigwa.
 
 from __future__ import annotations
 
-import json
-
 import allel
 import numpy as np
 import pandas as pd
 
+from ..analysis import admixture as admixture_mod
 from ..analysis import genebank, load_genotypes, stats
 from ..analysis.results import resolve_output_dir, write_csv
+from ..progress import notify
 from ..server import get_client, progress_tool
+from . import load_json_arg
 
 
 @progress_tool()
@@ -214,9 +215,9 @@ def _groups_from_tsv(gm, tsv_path: str, group_column: str, id_column: str = "ind
     return groups
 
 
-def _resolve_groups(gm, groups_json: str | None) -> tuple[dict[str, list[int]], list[str]]:
+def _resolve_groups(gm, groups_json: str | dict | None) -> tuple[dict[str, list[int]], list[str]]:
     """Map a {group: [accession names/ids]} JSON object to sample-index lists."""
-    mapping = json.loads(groups_json)
+    mapping = load_json_arg(groups_json)
     name_to_idx: dict[str, int] = {}
     for i, (sid, sname) in enumerate(zip(gm.sample_ids, gm.sample_names)):
         name_to_idx.setdefault(str(sname), i)
@@ -234,7 +235,7 @@ def _resolve_groups(gm, groups_json: str | None) -> tuple[dict[str, list[int]], 
 @progress_tool()
 def diversity_fst(
     variant_set_db_id: str,
-    groups_json: str | None = None,
+    groups_json: str | dict | None = None,
     metadata_tsv: str | None = None,
     group_column: str | None = None,
     id_column: str = "individual",
@@ -301,7 +302,7 @@ def diversity_fst(
 @progress_tool()
 def diversity_by_group(
     variant_set_db_id: str,
-    groups_json: str | None = None,
+    groups_json: str | dict | None = None,
     metadata_tsv: str | None = None,
     group_column: str | None = None,
     id_column: str = "individual",
@@ -444,8 +445,10 @@ def diversity_structure(
     K in ``k_min..k_max`` and picks the K with the highest pseudo-F (Calinski-Harabasz)
     between/within variance ratio — a clear maximum when groups are well separated.
     Writes ``structure_clusters.csv`` (sample, assigned cluster at the best K, PC coords)
-    and reports the chosen K with cluster sizes. (No external ADMIXTURE binary — computed
-    entirely in Python, consistent with the rest of the analysis layer.)
+    and reports the chosen K with cluster sizes. Pure Python, no external binary, works on
+    every platform including Windows. For model-based ancestry fractions from the actual
+    ADMIXTURE tool instead of this K-means approximation, see ``diversity_admixture``
+    (Linux/macOS only).
     """
     from scipy.cluster.vq import kmeans2
 
@@ -503,6 +506,167 @@ def diversity_structure(
         f"Suggested K={best_k} (highest pseudo-F); cluster sizes: {sizes}\n"
         f"pseudo-F by K (inspect for an elbow; rerun with k_min=k_max to fix K): {f_line}"
         f"{note}\n"
+        f"File: {path}"
+    )
+
+
+@progress_tool()
+def diversity_admixture(
+    variant_set_db_id: str,
+    k_min: int = 2,
+    k_max: int = 6,
+    max_markers: int | None = None,
+    method: str = "vcf",
+    region: str | None = None,
+    individuals: list[str] | None = None,
+    reference_groups_json: str | dict | None = None,
+    output_dir: str | None = None,
+    seed: int = 1,
+    threads: int | None = None,
+) -> str:
+    """Model-based ancestry estimation with the real ADMIXTURE binary.
+
+    Runs ADMIXTURE (Alexander, Novembre & Lange 2009) itself -- not a Python
+    approximation -- with cross-validation for each K in ``k_min..k_max``, and reports
+    the per-sample ancestry (Q) matrix at the K with the lowest CV error. The official
+    static binary is fetched into a per-user cache on first use; it is published for
+    Linux and macOS only (no native Windows build), so on Windows run this tool from
+    WSL, Linux or Docker. For a dependency-free alternative that runs everywhere,
+    including Windows, see ``diversity_structure`` (PCA + K-means, pure Python -- not
+    the same statistical model, but similar exploratory intent). Writes
+    ``admixture_Q_K<k>.csv`` (chosen K) and ``admixture_cv.csv`` (CV error per K).
+    ADMIXTURE is free for academic/non-profit use; commercial use requires a license
+    from the author -- see https://dalexander.github.io/admixture.
+
+    ``individuals`` restricts which samples are analysed (e.g. just the ones missing a
+    population label, when the rest are used as a reference elsewhere). Supplying it
+    switches the genotype fetch from the whole-run BrAPI export to Gigwa's selection-aware
+    export, since BrAPI can't filter by individual -- and resolves those names to their
+    callsets *by individual identity*, not this run's raw callsets (see
+    ``gigwa_mcp.analysis.genotypes`` for why). ``region`` alone does not have this effect.
+
+    **Supervised mode.** ``reference_groups_json`` (e.g. ``{"XI": [...], "GJ": [...]}``,
+    members named like ``individuals``) fixes those samples as known reference
+    populations and runs ``admixture --supervised`` once with K = number of groups;
+    every other analysed sample is a target whose ancestry is estimated against them.
+    ``k_min``/``k_max`` are ignored, and no CV is run. Reference members are added to
+    ``individuals`` automatically, so ``individuals`` need only list the targets. Q
+    columns are named after the reference groups. Writes ``admixture_supervised_Q.csv``
+    (all samples, with a ``reference_group`` column: blank for targets).
+    """
+    reference_groups = load_json_arg(reference_groups_json) if reference_groups_json else None
+    if reference_groups is not None:
+        if not isinstance(reference_groups, dict) or len(reference_groups) < 2:
+            return "reference_groups_json must map at least 2 group names to member lists."
+        if individuals is not None:
+            wanted = dict.fromkeys(str(i) for i in individuals)
+            for members in reference_groups.values():
+                wanted.update(dict.fromkeys(str(m) for m in members))
+            individuals = list(wanted)
+
+    client = get_client()
+    gm = load_genotypes(
+        client, variant_set_db_id, max_markers=max_markers or None, method=method,
+        region=region, individuals=individuals,
+    )
+    if gm.n_samples < 4:
+        return f"Not enough samples for ADMIXTURE in {variant_set_db_id} (need >= 4)."
+
+    if reference_groups is not None:
+        return _admixture_supervised(
+            gm, variant_set_db_id, reference_groups_json, output_dir, seed, threads
+        )
+
+    k_lo = max(1, k_min)
+    k_hi = min(max(k_lo, k_max), gm.n_samples - 1)
+    if k_hi < k_lo:
+        return f"Not enough samples ({gm.n_samples}) to evaluate k_min={k_min} for ADMIXTURE."
+
+    out = resolve_output_dir(variant_set_db_id, output_dir)
+    work = out / "admixture_run"
+    work.mkdir(parents=True, exist_ok=True)
+    notify("Writing PLINK BED for ADMIXTURE…")
+    dataset = admixture_mod.write_plink_bed(gm, work / "data")
+
+    runs = [
+        admixture_mod.run_admixture(dataset, k, cv=True, seed=seed, threads=threads)
+        for k in range(k_lo, k_hi + 1)
+    ]
+
+    scored = [r for r in runs if r.cv_error is not None]
+    best = min(scored, key=lambda r: r.cv_error) if scored else runs[-1]
+    df = admixture_mod.q_dataframe(gm, best)
+    path = write_csv(df, out, f"admixture_Q_K{best.k}.csv")
+
+    cv_df = pd.DataFrame(
+        [{"k": r.k, "cv_error": r.cv_error, "log_likelihood": r.log_likelihood} for r in runs]
+    )
+    cv_path = write_csv(cv_df, out, "admixture_cv.csv")
+
+    counts = df["dominant_cluster"].value_counts().sort_index()
+    sizes = ", ".join(f"Q{c}={n}" for c, n in counts.items())
+    cv_line = ", ".join(
+        f"K={r.k}:CV={r.cv_error:.4f}" if r.cv_error is not None else f"K={r.k}:CV=n/a" for r in runs
+    )
+    cv_note = "" if scored else " -- CV error unavailable; reporting k_max"
+    return (
+        f"ADMIXTURE for {variant_set_db_id} "
+        f"({dataset.n_variants} markers × {dataset.n_samples} samples)\n"
+        f"Best K={best.k} (lowest CV error{cv_note}); dominant-cluster sizes: {sizes}\n"
+        f"CV error by K (rerun with k_min=k_max to fix K): {cv_line}\n"
+        f"File: {path}\nCV table: {cv_path}"
+    )
+
+
+def _admixture_supervised(gm, variant_set_db_id, reference_groups_json, output_dir, seed, threads) -> str:
+    groups, unmatched = _resolve_groups(gm, reference_groups_json)
+    labels: list[str | None] = [None] * gm.n_samples
+    for gname, idx in groups.items():
+        for i in idx:
+            if labels[i] is not None and labels[i] != gname:
+                return (
+                    f"Sample {gm.sample_names[i]!r} is listed in both reference groups "
+                    f"{labels[i]!r} and {gname!r}."
+                )
+            labels[i] = gname
+    if len(groups) < 2:
+        return (
+            f"Only {len(groups)} reference group(s) matched samples in {variant_set_db_id}; "
+            f"supervised ADMIXTURE needs at least 2. Unmatched members: {unmatched[:20]}"
+        )
+    targets = [i for i, lab in enumerate(labels) if lab is None]
+    if not targets:
+        return "Every analysed sample is in a reference group -- no targets left to estimate."
+
+    out = resolve_output_dir(variant_set_db_id, output_dir)
+    work = out / "admixture_supervised_run"
+    work.mkdir(parents=True, exist_ok=True)
+    notify("Writing PLINK BED + .pop for supervised ADMIXTURE…")
+    dataset = admixture_mod.write_plink_bed(gm, work / "data")
+    populations = admixture_mod.write_pop_file(dataset, labels)
+    run = admixture_mod.run_admixture(
+        dataset, len(populations), cv=False, supervised=True, seed=seed, threads=threads
+    )
+
+    df = admixture_mod.q_dataframe(gm, run, populations)
+    df.insert(2, "reference_group", [lab or "" for lab in labels])
+    path = write_csv(df, out, "admixture_supervised_Q.csv")
+
+    tq = df.iloc[targets]
+    means = ", ".join(f"{p}={tq[p].mean():.3f}" for p in populations)
+    counts = tq["dominant_cluster"].value_counts()
+    dominant = ", ".join(f"{p}={int(counts.get(p, 0))}" for p in populations)
+    ref_sizes = ", ".join(f"{g}={len(idx)}" for g, idx in groups.items())
+    warn = (
+        f"\n⚠ {len(unmatched)} reference member(s) not found among analysed samples: "
+        f"{unmatched[:20]}" if unmatched else ""
+    )
+    return (
+        f"Supervised ADMIXTURE for {variant_set_db_id} "
+        f"({dataset.n_variants} markers × {dataset.n_samples} samples, K={run.k})\n"
+        f"Reference groups: {ref_sizes}; targets: {len(targets)}\n"
+        f"Mean target ancestry: {means}\n"
+        f"Targets by dominant ancestry: {dominant}{warn}\n"
         f"File: {path}"
     )
 
