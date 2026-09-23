@@ -24,3 +24,5 @@ mcpb.sh
 manifest.json
 # Built MCPB bundle (~86 MB). Shipped as a GitHub Release asset, not tracked here.
 GigwaMCP.mcpb
+# uv lockfile, auto-created by `uv run`; the package is installed from pyproject ranges.
+uv.lock

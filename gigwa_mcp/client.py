@@ -35,7 +35,7 @@ import httpx
 
 from .config import GigwaConfig
 from .errors import GigwaAPIError, GigwaAuthError, GigwaExportError, GigwaImportError
-from .exports import ExportSelection, ExportService, ExportStartResult
+from .exports import BULK_TRANSFER_TIMEOUT, ExportSelection, ExportService, ExportStartResult
 from .progress import notify
 
 
@@ -136,7 +136,18 @@ class GigwaClient:
         """
         return not (self.config.username and self.config.password)
 
-    def _generate_token(self) -> str:
+    def _request_token(self) -> str:
+        """POST /gigwa/generateToken and return the raw token -- without storing it as
+        the client's own session token (:attr:`_token`). Building block for both
+        :meth:`_generate_token` (the shared session token used for ordinary requests)
+        and any export that needs its *own*, independent token (see
+        :meth:`ExportService.start`): Gigwa tracks one "current export" per token, so
+        two exports sharing a token -- the shared session one, if neither asked for its
+        own -- can collide (one export's progress/state overwriting the other's) the
+        moment they overlap in time, whether that's a deliberate concurrent run or just
+        a retry issued before the previous attempt's server-side thread actually died.
+        Each call here mints an independent token from Gigwa, so callers needing
+        isolation just need to call it again rather than reuse one."""
         url = f"{self.rest}/gigwa/generateToken"
         try:
             resp = self._http.post(
@@ -157,8 +168,15 @@ class GigwaClient:
             token = None
         if not token:
             raise GigwaAuthError("Gigwa did not return a token.")
-        self._token = token
         return token
+
+    def _generate_token(self) -> str:
+        """(Re)generate *this client's own* session token, used for ordinary requests
+        (the ``Authorization`` header on everything that doesn't ask for its own
+        export-scoped token) and as the default for :meth:`export_progress`/
+        :meth:`_wait_for_export` when no explicit ``token`` is given."""
+        self._token = self._request_token()
+        return self._token
 
     def _token_header(self) -> dict[str, str]:
         if self.anonymous:
@@ -177,12 +195,17 @@ class GigwaClient:
         files: Sequence[tuple[str, Any]] | None = None,
         json_body: Any | None = None,
         headers: dict[str, str] | None = None,
+        timeout: "httpx.Timeout | float | None" = None,
         _retry_auth: bool = True,
     ) -> httpx.Response:
         """Issue one request. ``headers``, when given, replaces the normal auth header
         entirely (used to poll export progress under the ``"export_"``-prefixed pseudo
         token — see :meth:`_export_progress`) and disables the 401 auto-retry, since that
-        override isn't the expired-token case the retry exists for."""
+        override isn't the expired-token case the retry exists for.
+
+        ``timeout``, when given, overrides the client-wide read timeout for *this* call
+        only (see :meth:`_read_timeout_for_body` for why a large genotype export needs
+        one)."""
         url = f"{self.rest}{path}"
         resp = self._http.request(
             method,
@@ -191,6 +214,7 @@ class GigwaClient:
             files=files,
             json=json_body,
             headers=headers if headers is not None else self._token_header(),
+            **({"timeout": timeout} if timeout is not None else {}),
         )
         if resp.status_code == 401 and _retry_auth and not self.anonymous and headers is None:
             # Token likely expired -> refresh once and retry.
@@ -201,6 +225,7 @@ class GigwaClient:
                 params=params,
                 files=files,
                 json_body=json_body,
+                timeout=timeout,
                 _retry_auth=False,
             )
         return resp
@@ -452,27 +477,36 @@ class GigwaClient:
         )
 
     # -- export progress (distinct process-id scheme from imports) ---------
-    def export_progress(self) -> ProgressStatus | None:
-        """Poll the progress of *this session's* most recent export (started via
-        :meth:`start_export`/:meth:`export_selection`).
+    def export_progress(self, *, token: str | None = None) -> ProgressStatus | None:
+        """Poll the progress of an export tracked under *token* (defaults to this
+        client's own shared session token -- the ``get_export_progress`` tool's
+        "current export" convenience check when the caller didn't ask for a dedicated
+        one).
 
-        Gigwa tracks an export under the process id ``"export_" + <session token>``
+        Gigwa tracks an export under the process id ``"export_" + <token>``
         (``GigwaGa4ghServiceImpl.exportVariants``: ``processId = "export_" + token``), and
         ``GET /gigwa/progress`` falls back to reading its process id straight from the
         ``Authorization`` header (``tokenManager.readToken(request)``) whenever no
         ``progressToken`` query parameter is given (``GigwaRestController.getProcessProgress``).
         So — unlike an import, which is polled by the token *returned from* the import call —
         an export is polled by re-authenticating with an ``"export_"``-prefixed pseudo-token
-        instead of a query parameter, and takes no id: there is exactly one "current export"
-        per authenticated session. Verified against the Gigwa server source (not just a
-        browser capture): confirms the mechanism is exactly this, not a coincidence of one
-        build's URL.
+        instead of a query parameter: there is exactly one "current export" *per token*, not
+        per session -- which is exactly why two exports that share a token can collide, and
+        why a dedicated (:meth:`GigwaClient._request_token`-minted) token per export avoids
+        it. Verified against the Gigwa server source (not just a browser capture): confirms
+        the mechanism is exactly this, not a coincidence of one build's URL.
         """
-        if not self._token:
-            self._generate_token()
-        resp = self.request(
-            "GET", "/gigwa/progress", headers={"Authorization": f"Bearer export_{self._token}"}
-        )
+        tok = token
+        if tok is None and not self.anonymous:
+            if not self._token:
+                self._generate_token()
+            tok = self._token
+        # Anonymous (or an explicit token=None that stays None, i.e. anonymous): no
+        # credentials to authenticate this poll with at all -- send it unauthenticated,
+        # same as every other anonymous request, rather than trying to auto-generate a
+        # token with empty credentials and raising.
+        headers = {"Authorization": f"Bearer export_{tok}"} if tok else {}
+        resp = self.request("GET", "/gigwa/progress", headers=headers)
         if resp.status_code == 204:
             return None
         self._check(resp, "progress (export)")
@@ -484,9 +518,11 @@ class GigwaClient:
             return None
         return ProgressStatus(raw=data)
 
-    def _wait_for_export(self, *, poll_interval: float, timeout: float) -> ProgressStatus:
+    def _wait_for_export(
+        self, *, poll_interval: float, timeout: float, token: str | None = None
+    ) -> ProgressStatus:
         return self._poll_until_complete(
-            self.export_progress,
+            lambda: self.export_progress(token=token),
             poll_interval=poll_interval,
             timeout=timeout,
             what="Export",
@@ -555,13 +591,25 @@ class GigwaClient:
         Gigwa's BrAPI export is asynchronous: the first call returns HTTP 202
         ("Initiating export..."); we re-request until it returns HTTP 200 with the
         full VCF body, then stream it to disk.
+
+        Real percentage while we wait: this same export is tracked server-side under
+        the deterministic process id ``"brapiV2export-" + variantSetDbId + "-vcf"``
+        (``VariantsetsApiController.variantsetsExportIntoFormat`` /
+        ``VariantSet.brapiV2ExportFilePrefix`` -- verified against the Gigwa server
+        source, not guessed from a response shape), so we poll it via the general
+        :meth:`progress` lookup (which takes an explicit token, unlike
+        :meth:`export_progress`'s session-token-derived one for the ``/gigwa/exportData``
+        path) and report the real percentage through :func:`notify`, falling back to an
+        indeterminate ping only until the server has registered a status at all.
         """
         dest_path = Path(dest_path)
         quoted = urllib.parse.quote(variant_set_db_id, safe="")
         path = f"/brapi/v2/variantsets/{quoted}/export/vcf"
+        progress_token = f"brapiV2export-{variant_set_db_id}-vcf"
         deadline = time.monotonic() + timeout
+        seen_progress = False
         while True:
-            resp = self.request("GET", path)
+            resp = self.request("GET", path, timeout=BULK_TRANSFER_TIMEOUT)
             if resp.status_code == 200 and len(resp.content) > 64:
                 dest_path.write_bytes(resp.content)
                 return dest_path
@@ -573,7 +621,25 @@ class GigwaClient:
                 raise GigwaAPIError(
                     f"VCF export timed out after {timeout:.0f}s for {variant_set_db_id}."
                 )
-            notify("Exporting VCF from Gigwa…")
+            status = self.progress(progress_token)
+            if status is not None:
+                seen_progress = True
+                # A failure surfaces here, in the progress JSON's "error" field, before
+                # the main GET ever returns a non-202/200 status -- Gigwa reports it as
+                # a completed-with-error ProgressIndicator, not an HTTP error response.
+                # Left unchecked, this would silently keep polling until the *outer*
+                # timeout, turning a clear server-side cause into a useless generic
+                # timeout message. Same check _poll_until_complete already does for the
+                # /gigwa/exportData and import paths -- this is the one place it was
+                # missing.
+                if status.error:
+                    raise GigwaAPIError(f"VCF export failed: {status.error}")
+                if status.aborted:
+                    raise GigwaAPIError(f"VCF export was aborted on the server for {variant_set_db_id}.")
+                pct = status.percent
+                notify(status.summary(), pct if (pct is not None and 0 <= pct <= 100) else None, 100)
+            elif not seen_progress:
+                notify("Exporting VCF from Gigwa…")
             time.sleep(poll_interval)
 
     # -- variant search / filtering (GA4GH) --------------------------------
@@ -809,7 +875,7 @@ class GigwaClient:
         path = f"/brapi/v2/variantsets/{quoted}/export/{fmt}"
         deadline = time.monotonic() + timeout
         while True:
-            resp = self.request("GET", path)
+            resp = self.request("GET", path, timeout=BULK_TRANSFER_TIMEOUT)
             if resp.status_code == 200 and len(resp.content) > 64:
                 dest_path.write_bytes(resp.content)
                 return dest_path

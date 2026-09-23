@@ -18,11 +18,14 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import anyio
+import httpx
 from starlette.types import ASGIApp, Receive, Scope, Send
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from .client import GigwaClient
 from .config import GigwaConfig
+from .errors import GigwaError
 from . import __version__
 from .progress import reset_reporter, set_reporter
 
@@ -184,6 +187,17 @@ def progress_tool(**tool_kwargs: Any) -> Callable[[Callable[..., Any]], Callable
             token = set_reporter(ctx.report_progress if ctx is not None else None)
             try:
                 return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+            # The SDK reports anything but a ToolError as a crash and hides its text: the
+            # model sees only "Error executing tool <name>" -- confirmed live, a
+            # diversity_admixture whose export download died gave no hint why. Gigwa and
+            # network failures are anticipated, so hand their message through.
+            except GigwaError as exc:
+                raise ToolError(str(exc)) from exc
+            except httpx.TransportError as exc:
+                raise ToolError(
+                    f"Connection to Gigwa failed ({type(exc).__name__}: {exc or 'no detail'}). "
+                    f"Check the network and retry."
+                ) from exc
             finally:
                 reset_reporter(token)
 
@@ -364,6 +378,9 @@ TOOL_CATALOG: dict[str, ToolInfo] = {
     "diversity_structure": ToolInfo(
         "Diversity & structure", "Population-structure clustering (PCA + K-means).",
         _CLUSTER, _T_POPGEN),
+    "diversity_admixture": ToolInfo(
+        "Diversity & structure", "Model-based ancestry (Q matrix) via the real ADMIXTURE binary.",
+        _CLUSTER, _T_POPGEN),
     "diversity_tree": ToolInfo(
         "Diversity & structure", "UPGMA dendrogram of accessions from IBS distance.",
         _PHYLO, _T_PHYLO),
@@ -451,6 +468,7 @@ _PARAM_DESCRIPTIONS: dict[str, str] = {
     "keep_on_server": "Also leave a copy of the export in the user's Gigwa temp-output area after downloading it here.",
     "filters_json": "JSON object mapping each metadata field name to a list of acceptable values, e.g. {\"GroupK4\": [\"cA\"]} (see list_metadata_values for field/value names). Multiple fields AND together; multiple values for one field OR together.",
     "download_url": "Download URL returned by export_genotypes(..., wait=False), once get_export_progress reports the export complete.",
+    "export_token": "The export's own token, from export_genotypes(..., wait=False)'s reply -- pins the check to that specific export. Omit only when at most one export is in flight at a time; Gigwa tracks one \"current export\" per token, so with no argument this falls back to the session's shared token and could report a different export's status.",
     "min_sample_call_rate": "Flag samples with call rate below this (0-1).",
     "min_marker_call_rate": "Flag markers with call rate below this (0-1).",
     "outlier_sd": "Flag points more than this many standard deviations from the mean.",
@@ -460,6 +478,7 @@ _PARAM_DESCRIPTIONS: dict[str, str] = {
     "n_components": "Number of principal components to compute.",
     "top_pairs": "How many most-related sample pairs to report.",
     "groups_json": "JSON object mapping each group name to a list of accession names/ids.",
+    "reference_groups_json": "Supervised ADMIXTURE: JSON object mapping each reference population name to its member individuals, e.g. {\"XI\": [...], \"GJ\": [...]}. Runs once with K = number of groups (k_min/k_max ignored); every other analysed sample is a target. Members are auto-added to individuals.",
     "metadata_tsv": "Path to a metadata TSV (import_metadata format) used to define groups.",
     "group_column": "Column in the metadata TSV holding the group/population label.",
     "id_column": "Column in the metadata TSV holding the individual/accession id (default 'individual').",
@@ -470,6 +489,8 @@ _PARAM_DESCRIPTIONS: dict[str, str] = {
     "het_threshold": "Mean observed-heterozygosity above which a run is flagged BROKEN (mis-called heterozygotes).",
     "complete_call_rate": "Call-rate above which a run is flagged as suspiciously complete (no missing data).",
     "monomorphic_threshold": "Monomorphic-marker fraction above which a run is flagged for low informativeness.",
+    "seed": "Random seed for ADMIXTURE's initialization (reproducibility).",
+    "threads": "Number of CPU threads ADMIXTURE should use; omit to let it choose.",
 }
 
 

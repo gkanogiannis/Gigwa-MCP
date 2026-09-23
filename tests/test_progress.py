@@ -54,3 +54,41 @@ def test_progress_tool_body_runs_and_forwards_notifications(monkeypatch):
     assert result == "done 5"
     assert emitted == [(1.0, 2, "step 1"), (2.0, 2, "step 2")]
     mcp._tool_manager.remove_tool("worker")
+
+
+def test_progress_tool_surfaces_gigwa_and_network_errors_to_the_model():
+    """The SDK hides any non-ToolError exception's text ("Error executing tool <name>"
+    only) -- confirmed live: diversity_admixture's dead export download gave no clue.
+    Gigwa and connection failures must reach the model with their message."""
+    import anyio
+    import httpx
+    import pytest
+    from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
+
+    from gigwa_mcp.errors import GigwaExportError
+
+    @progress_tool()
+    def failing(kind: str) -> str:
+        """Fail on demand."""
+        raise {
+            "gigwa": GigwaExportError("Export download stalled: no data received for 120s"),
+            "net": httpx.ReadError(""),
+            "bug": RuntimeError("internal detail"),
+        }[kind]
+
+    async def call(kind: str):
+        with pytest.raises(ToolError) as info:
+            await mcp.call_tool("failing", {"kind": kind})
+        return info
+
+    try:
+        gigwa = anyio.run(call, "gigwa")
+        assert "Export download stalled" in str(gigwa.value)
+        assert not isinstance(gigwa.value, UnexpectedToolError)
+        net = anyio.run(call, "net")
+        assert "Connection to Gigwa failed (ReadError" in str(net.value)
+        bug = anyio.run(call, "bug")  # genuine crashes stay masked
+        assert isinstance(bug.value, UnexpectedToolError)
+        assert "internal detail" not in str(bug.value)
+    finally:
+        mcp._tool_manager.remove_tool("failing")
