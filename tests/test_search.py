@@ -346,7 +346,8 @@ def test_abort_calls_abort_process():
     assert client.abort("import::u::xyz") is True
     assert seen["method"] == "DELETE"  # GET/POST return HTTP 500 on the live server
     assert seen["path"].endswith("/gigwa/abortProcess")
-    assert seen["params"]["processID"] == "import::u::xyz"
+    assert seen["params"]["progressToken"] == "import::u::xyz"  # the parameter Gigwa reads
+    assert seen["params"]["processID"] == "import::u::xyz"  # older builds
 
 
 def test_get_germplasm_falls_back_to_get_listing():

@@ -1434,17 +1434,28 @@ class GigwaClient:
         return []
 
     # -- process control / user info --------------------------------------
-    def abort(self, token: str) -> bool:
-        """Ask Gigwa to abort the process identified by *token*. Returns True on success.
+    def abort(self, token: str, *, timeout: "httpx.Timeout | float | None" = None) -> bool:
+        """Ask Gigwa to abort the process identified by *token*. Returns whether Gigwa
+        found a running process under that id and flagged it as aborted.
 
-        The endpoint is ``DELETE /gigwa/abortProcess?processID=<token>`` — verified live
-        against 2.13-beta2 (GET/POST return HTTP 500 "method not supported"; DELETE
-        returns 200 and stops the running job).
+        ``DELETE /gigwa/abortProcess``. The process id travels as the ``progressToken``
+        query parameter (``GigwaRestController.abortProcess``); without it Gigwa falls
+        back to the *authentication* token -- so the ``processID`` spelling this used to
+        send alone was silently ignored and aborted nothing (confirmed live: a search kept
+        running). ``processID`` is still sent for older builds. The answer is
+        ``{"processAborted": bool}``.
         """
-        resp = self.request("DELETE", "/gigwa/abortProcess", params={"processID": token})
+        resp = self.request(
+            "DELETE", "/gigwa/abortProcess",
+            params={"progressToken": token, "processID": token}, timeout=timeout,
+        )
         if resp.status_code >= 400:
             raise GigwaAPIError("abortProcess failed", status_code=resp.status_code, body=resp.text)
-        return True
+        try:
+            data = resp.json()
+        except ValueError:
+            return True
+        return bool(data.get("processAborted", True)) if isinstance(data, dict) else True
 
     def user_info(self) -> dict[str, Any]:
         """Return the current user's info/permissions (``GET /gigwa/userInfo``)."""
