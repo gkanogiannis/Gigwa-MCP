@@ -25,11 +25,13 @@ Verified against Gigwa 2.12-RELEASE:
 from __future__ import annotations
 
 import re
+import threading
 import time
 import urllib.parse
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence, TypeVar
 
 import httpx
 
@@ -37,6 +39,9 @@ from .config import GigwaConfig
 from .errors import GigwaAPIError, GigwaAuthError, GigwaExportError, GigwaImportError
 from .exports import BULK_TRANSFER_TIMEOUT, ExportSelection, ExportService, ExportStartResult
 from .progress import notify
+from .selection import GroupFilter, VariantSelection, ga4gh_variant_set_id
+
+T = TypeVar("T")
 
 
 def _bool(value: bool | None) -> str | None:
@@ -52,7 +57,18 @@ def _bool(value: bool | None) -> str | None:
 # GigwaSearchVariantsRequest ``searchMode`` values (verified live against 2.12-RELEASE and
 # 2.13-beta2: 0 = count only, 3 = return the variants).
 SEARCH_MODE_COUNT = 0
+SEARCH_MODE_BROWSE = 2  # read a page of the token's existing temporary collection
 SEARCH_MODE_FETCH = 3
+
+# Gigwa's per-interval statistics endpoints (the web UI's charts), by tool-facing name.
+CHART_ENDPOINTS = {
+    "maf": "/mafData",
+    "missing": "/missingData",
+    "heterozygosity": "/heterozygosityData",
+    "fst": "/fstData",
+    "tajima_d": "/tajimaDData",
+    "density": "/densityData",
+}
 
 
 @dataclass
@@ -89,9 +105,10 @@ class ProgressStatus:
             parts.append(self.description)
         # currentStepProgress is a percentage for some steps and a raw count for
         # others (the count is already in the description), so only show it as a
-        # percentage when it is in the 0-100 range.
+        # percentage when it is in the 0-100 range -- and not when the description
+        # already ends with it (search steps read "Finding matching variants... 44%").
         pct = self.percent
-        if pct is not None and 0 <= pct <= 100:
+        if pct is not None and 0 <= pct <= 100 and not self.description.endswith(f"{pct}%"):
             parts.append(f"{pct}%")
         if self.error:
             parts.append(f"error: {self.error}")
@@ -106,6 +123,8 @@ class GigwaClient:
         self.rest = config.rest_url
         self._token: str | None = None
         self.exports = ExportService(self)
+        # Seconds between progress polls while a genotype-level search is running.
+        self.search_poll_interval = 1.5
         # Bound *connection* establishment separately from the (long) read timeout: reads
         # can legitimately take minutes (VCF export / import), but connecting should be
         # quick. This makes an unreachable/misconfigured Gigwa fail in a few seconds
@@ -178,6 +197,32 @@ class GigwaClient:
         self._token = self._request_token()
         return self._token
 
+    def mint_token(self) -> str | None:
+        """Mint an independent Gigwa token, for work that needs its own server-side state.
+
+        Gigwa keeps one temporary variant collection (the result of a genotype-level
+        search) and one "current export" *per token*, so a variant subset gets a token of
+        its own to keep its results alive alongside others. With credentials this is
+        :meth:`_request_token`; anonymously it is ``POST /gigwa/generateToken`` with **no
+        body** -- exactly what the Gigwa web UI does for an anonymous visitor, and what
+        yields a token for the anonymous user (an *empty-credentials* body is the thing
+        Gigwa rejects). Returns ``None`` if an anonymous token cannot be obtained, in
+        which case the caller falls back to tokenless requests (all anonymous tokenless
+        callers then share one server-side slot).
+        """
+        if not self.anonymous:
+            return self._request_token()
+        try:
+            resp = self._http.post(
+                f"{self.rest}/gigwa/generateToken",
+                content=b"",
+                headers={"Content-Type": "application/json"},
+            )
+            token = resp.json().get("token") if resp.status_code < 400 else None
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return None
+        return str(token) if token else None
+
     def _token_header(self) -> dict[str, str]:
         if self.anonymous:
             return {}  # no Authorization header => anonymous access
@@ -196,6 +241,8 @@ class GigwaClient:
         json_body: Any | None = None,
         headers: dict[str, str] | None = None,
         timeout: "httpx.Timeout | float | None" = None,
+        token: str | None = None,
+        extra_headers: dict[str, str] | None = None,
         _retry_auth: bool = True,
     ) -> httpx.Response:
         """Issue one request. ``headers``, when given, replaces the normal auth header
@@ -203,20 +250,37 @@ class GigwaClient:
         token — see :meth:`_export_progress`) and disables the 401 auto-retry, since that
         override isn't the expired-token case the retry exists for.
 
+        ``token``, when given, authenticates this call with that token instead of the
+        shared session one -- e.g. a variant subset's own token, which owns the Gigwa
+        temporary variant collection its search built. A 401 then surfaces to the caller
+        (no auto-retry): refreshing a subset token also means rebuilding its selection.
+        ``extra_headers`` are added on top of whichever auth header applies (e.g.
+        ``workWithSamples``).
+
         ``timeout``, when given, overrides the client-wide read timeout for *this* call
         only (see :meth:`_read_timeout_for_body` for why a large genotype export needs
         one)."""
         url = f"{self.rest}{path}"
+        if headers is not None:
+            send_headers = dict(headers)
+        elif token is not None:
+            send_headers = {"Authorization": f"Bearer {token}"}
+        else:
+            send_headers = self._token_header()
+        send_headers.update(extra_headers or {})
         resp = self._http.request(
             method,
             url,
             params=params,
             files=files,
             json=json_body,
-            headers=headers if headers is not None else self._token_header(),
+            headers=send_headers,
             **({"timeout": timeout} if timeout is not None else {}),
         )
-        if resp.status_code == 401 and _retry_auth and not self.anonymous and headers is None:
+        if (
+            resp.status_code == 401 and _retry_auth and not self.anonymous
+            and headers is None and token is None
+        ):
             # Token likely expired -> refresh once and retry.
             self._token = None
             return self.request(
@@ -226,6 +290,7 @@ class GigwaClient:
                 files=files,
                 json_body=json_body,
                 timeout=timeout,
+                extra_headers=extra_headers,
                 _retry_auth=False,
             )
         return resp
@@ -649,7 +714,55 @@ class GigwaClient:
         its trailing ``§run`` segment dropped. Gigwa's GA4GH endpoints split this id
         expecting exactly module+project and throw a NullPointerException on the full
         three-part id, so we always normalise here."""
-        return "§".join(str(variant_set_db_id).split("§")[:2])
+        return ga4gh_variant_set_id(variant_set_db_id)
+
+    @staticmethod
+    def selection_from_filters(
+        variant_set_db_id: str,
+        *,
+        reference_name: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        min_maf: float | None = None,
+        max_maf: float | None = None,
+        max_missing_data: float | None = None,
+        min_het: float | None = None,
+        max_het: float | None = None,
+        selected_variant_types: str | None = None,
+        groups: Sequence[GroupFilter] | None = None,
+        work_with_samples: bool = False,
+    ) -> VariantSelection:
+        """Build a :class:`VariantSelection` from flat tool arguments.
+
+        The flat genotype thresholds (``min_maf``/``max_maf``/``max_missing_data``/
+        ``min_het``/``max_het``) are shorthand for a single group spanning every
+        individual; they cannot be combined with explicit ``groups`` (say which group a
+        threshold belongs to instead).
+        """
+        flat = {
+            "min_maf": min_maf, "max_maf": max_maf, "max_missing": max_missing_data,
+            "min_het": min_het, "max_het": max_het,
+        }
+        if groups:
+            if any(v is not None for v in flat.values()):
+                raise ValueError(
+                    "Pass genotype thresholds either flat (whole population) or inside "
+                    "group_filters (per group), not both."
+                )
+            group_list = tuple(groups)
+        elif any(v is not None for v in flat.values()):
+            group_list = (GroupFilter(**flat),)
+        else:
+            group_list = ()
+        return VariantSelection(
+            variant_set_db_id=variant_set_db_id,
+            reference_name=reference_name,
+            start=start,
+            end=end,
+            selected_variant_types=selected_variant_types,
+            groups=group_list,
+            work_with_samples=work_with_samples,
+        )
 
     def _variant_search_body(
         self,
@@ -666,6 +779,7 @@ class GigwaClient:
         page_size: int,
         page_token: str,
         get_gt: bool,
+        groups: Sequence[GroupFilter] | None = None,
     ) -> dict[str, Any]:
         """Assemble a GigwaSearchVariantsRequest body, matching what the Gigwa web UI sends.
 
@@ -673,49 +787,46 @@ class GigwaClient:
         individuals" and the endpoint rejects an omitted list (HTTP 400). ``reference_name``
         + ``start``/``end`` filter by region server-side.
 
-        The genotype-stat filters (``min_maf``/``max_maf``/``max_missing_data``) are Gigwa
-        per-sample-group arrays. When any is set we build a single group (index 0) spanning
-        the whole selection and send the full set of one-element companion arrays the
-        server's genotype-filter path requires — an absent/short array makes it throw. Two
-        details verified against the UI + live server: MAF and missing-data go to Gigwa as
-        **percentages** (0–50 / 0–100), so the 0–1 fractions the tools take are scaled by
-        100; and ``discriminate`` must be ``[None]`` ("no discrimination") — a numeric value
-        makes Gigwa filter the group against itself and return nothing.
+        The genotype-stat filters are Gigwa per-group arrays built by
+        :func:`gigwa_mcp.selection.group_arrays` (see that module for the verified
+        details: percentages, full-length companion arrays, ``discriminate=[None]``). The
+        flat ``min_maf``/``max_maf``/``max_missing_data`` form a single group spanning the
+        whole selection; ``groups`` passes several explicit ones. ``callset_ids``, when
+        given, overrides group 1's ``callSetIds`` verbatim (already ``module§id``-framed).
         """
-        body: dict[str, Any] = {
-            "variantSetId": self._ga4gh_variant_set_id(variant_set_db_id),
-            "callSetIds": list(callset_ids) if callset_ids else [],
-            "searchMode": search_mode,
-            "getGT": get_gt,
-            "pageSize": page_size,
-            "pageToken": page_token,
-        }
-        if reference_name:
-            body["referenceName"] = reference_name
-        if start is not None:
-            body["start"] = int(start)
-        if end is not None:
-            body["end"] = int(end)
-        if min_maf is not None or max_maf is not None or max_missing_data is not None:
-            body.update(
-                {
-                    "discriminate": [None],
-                    "groupName": [""],
-                    "gtPattern": [""],
-                    "mostSameRatio": ["100"],
-                    "minMaf": [float(min_maf) * 100 if min_maf is not None else 0.0],
-                    "maxMaf": [float(max_maf) * 100 if max_maf is not None else 50.0],
-                    "minMissingData": [0.0],
-                    "maxMissingData": [
-                        float(max_missing_data) * 100 if max_missing_data is not None else 100.0
-                    ],
-                    "minHeZ": [0.0],
-                    "maxHeZ": [100.0],
-                    "annotationFieldThresholds": [{}],
-                    "additionalCallSetIds": [],
-                }
-            )
+        selection = self.selection_from_filters(
+            variant_set_db_id,
+            reference_name=reference_name,
+            start=start,
+            end=end,
+            min_maf=min_maf,
+            max_maf=max_maf,
+            max_missing_data=max_missing_data,
+            groups=groups,
+        )
+        body = selection.body(
+            search_mode=search_mode, page_size=page_size, page_token=page_token, get_gt=get_gt
+        )
+        if callset_ids:
+            body["callSetIds"] = list(callset_ids)
         return body
+
+    def _post_search(
+        self, body: dict[str, Any], *, token: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        resp = self._check(
+            self.request(
+                "POST", "/ga4gh/variants/search", json_body=body, token=token,
+                extra_headers=extra_headers, timeout=BULK_TRANSFER_TIMEOUT,
+            ),
+            "variants/search",
+        )
+        try:
+            data = resp.json()
+        except ValueError:
+            return {}
+        return data if isinstance(data, dict) else {}
 
     def count_variants(
         self,
@@ -744,14 +855,187 @@ class GigwaClient:
             page_token="",
             get_gt=False,
         )
-        resp = self._check(
-            self.request("POST", "/ga4gh/variants/search", json_body=body), "variants/search"
+        return self._count(body, genotype_filtered="minMaf" in body)
+
+    def count_selection(self, selection: VariantSelection, *, token: str | None = None) -> int:
+        """Count the variants of a :class:`VariantSelection` (``searchMode`` 0: count only,
+        no temporary collection is built)."""
+        return self._count(
+            selection.body(search_mode=SEARCH_MODE_COUNT),
+            genotype_filtered=selection.has_genotype_filters,
+            token=token,
+            extra_headers=selection.headers(),
         )
+
+    def _count(
+        self, body: dict[str, Any], *, genotype_filtered: bool, token: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> int:
+        """POST a count and surface the reason when Gigwa answers 0 because it refused.
+
+        Gigwa reports a refused genotype-filter count (e.g. "MAF is only supported on
+        biallelic data!", or a dataset too large for the matrix-size limit) only on the
+        token's progress indicator, answering ``count: 0``. That errored indicator is then
+        reused by the token's *next* count, which silently returns 0 as well -- so a
+        genotype-filtered count runs under a freshly minted token (unless one is given)
+        and a 0 is checked against that token's progress.
+        """
+        if token is None and genotype_filtered:
+            token = self.mint_token()
+        post = lambda: self._post_search(body, token=token, extra_headers=extra_headers)  # noqa: E731
+        data = (
+            self.run_with_search_progress(post, token=token, what="Counting matching variants")
+            if genotype_filtered else post()
+        )
+        count = int(data.get("count") or 0)
+        if count == 0:
+            self._raise_progress_error(token, "variants/search")
+        return count
+
+    # -- search progress (same ProgressIndicator scheme as imports/exports) -----------
+    def search_progress(self, token: str | None, *, progress_id: str | None = None) -> ProgressStatus | None:
+        """Best-effort snapshot of the search running under *token*, or ``None``.
+
+        Gigwa registers a genotype-level search's ``ProgressIndicator`` under the process
+        id = the searching token (``findVariants`` / ``countVariants``), readable through
+        ``GET /gigwa/progress?progressToken=<token>`` -- the same endpoint and status shape
+        as an import's or an export's progress, polled here while the search request is
+        still open. ``progress_id`` reads an indicator registered under another id (the
+        per-interval statistics endpoints accept one, see :meth:`selection_chart`) while
+        still authenticating with *token*. Never raises: progress reporting must not break
+        the search.
+        """
+        if not (token or progress_id):
+            return None
         try:
+            resp = self.request(
+                "GET", "/gigwa/progress", params={"progressToken": progress_id or token},
+                token=token,
+            )
+            if resp.status_code == 204 or resp.status_code >= 400:
+                return None
             data = resp.json()
-        except ValueError:
-            return 0
-        return int(data.get("count") or 0)
+        except (httpx.HTTPError, ValueError):
+            return None
+        return ProgressStatus(raw=data) if isinstance(data, dict) else None
+
+    def follow_search_progress(
+        self, job: threading.Thread, *, token: str | None, what: str,
+        poll_interval: float | None = None, progress_id: str | None = None,
+    ) -> None:
+        """Block until *job* (a thread holding a Gigwa search request open) finishes,
+        relaying the search's server-side progress as MCP progress notifications -- the
+        search-side counterpart of :meth:`_wait_for_export`'s polling loop.
+
+        Unlike an export (which returns at once and is then polled until its indicator
+        reports completion), a search answers only once it is done, so the *request*
+        finishing is what ends the wait; the indicator only supplies the step
+        description and percentage shown meanwhile. That also makes a stale indicator
+        left on the token by an earlier operation harmless.
+        """
+        interval = self.search_poll_interval if poll_interval is None else poll_interval
+        notify(f"{what}…")
+        while True:
+            job.join(interval)
+            if not job.is_alive():
+                return
+            status = self.search_progress(token, progress_id=progress_id)
+            if status is None:
+                notify(f"{what}… (waiting for Gigwa)")
+                continue
+            pct = status.percent
+            notify(
+                status.summary() or f"{what}…",
+                pct if (pct is not None and 0 <= pct <= 100) else None,
+                100,
+            )
+
+    def run_with_search_progress(
+        self, work: Callable[[], T], *, token: str | None, what: str,
+        progress_id: str | None = None,
+    ) -> T:
+        """Run the blocking search call *work* on a helper thread and follow its progress
+        from the calling (tool) thread, which is the one allowed to emit MCP progress.
+        Without a token or progress id there is no indicator to read, so *work* just runs
+        inline."""
+        if not (token or progress_id):
+            return work()
+        outcome: dict[str, Any] = {}
+
+        def target() -> None:
+            try:
+                outcome["result"] = work()
+            except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
+                outcome["error"] = exc
+
+        job = threading.Thread(target=target, name="gigwa-search", daemon=True)
+        job.start()
+        self.follow_search_progress(job, token=token, what=what, progress_id=progress_id)
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["result"]
+
+    def _raise_progress_error(
+        self, token: str | None, action: str, *, progress_id: str | None = None
+    ) -> None:
+        """Raise the error Gigwa recorded on *token*'s (or *progress_id*'s) progress
+        indicator, if any."""
+        try:
+            status = self.progress(progress_id or token) if (progress_id or token) else None
+        except GigwaAPIError:
+            return
+        if status is not None and status.error:
+            raise GigwaAPIError(f"{action} refused by Gigwa: {status.error}")
+
+    def materialize_selection(
+        self, selection: VariantSelection, *, token: str | None, track: bool = True
+    ) -> int:
+        """Run a selection the way the Gigwa UI's "Search" does with browsing enabled
+        (``searchMode`` 3: count + search + first page) and return its variant count.
+
+        With genotype-level filters Gigwa writes the matching variants into the
+        temporary variant collection of *token*; :meth:`browse_selection`, exports and
+        the per-interval statistics endpoints then read that collection under the same
+        token instead of recomputing the filters.
+
+        ``track`` relays Gigwa's progress on the search while it runs (see
+        :meth:`run_with_search_progress`); a caller running this off the tool thread
+        (``define_variant_subset(wait=False)``) passes ``False`` and follows it with
+        :meth:`follow_search_progress` later instead.
+        """
+        post = lambda: self._post_search(  # noqa: E731
+            selection.body(search_mode=SEARCH_MODE_FETCH, page_size=1, page_token="0"),
+            token=token, extra_headers=selection.headers(),
+        )
+        data = (
+            self.run_with_search_progress(post, token=token, what="Finding matching variants")
+            if track and selection.has_genotype_filters else post()
+        )
+        count = int(data.get("count") or 0)
+        if count == 0:
+            self._raise_progress_error(token, "variants/search")
+        return count
+
+    def browse_selection(
+        self,
+        selection: VariantSelection,
+        *,
+        token: str | None,
+        page: int = 0,
+        page_size: int = 1000,
+    ) -> tuple[list[dict[str, Any]], str, int]:
+        """Read one page of an already-materialized selection (``searchMode`` 2: browse
+        only, straight from *token*'s temporary collection). Returns ``(variants,
+        next_page_token, total_count)``; ``next_page_token`` is ``""`` on the last page."""
+        data = self._post_search(
+            selection.body(search_mode=SEARCH_MODE_BROWSE, page_size=page_size,
+                           page_token=str(int(page))),
+            token=token, extra_headers=selection.headers(),
+        )
+        variants = data.get("variants")
+        if variants is None:  # tolerate a BrAPI-style {"result": {"data": [...]}} shape
+            variants = (data.get("result") or {}).get("data") or []
+        return list(variants), str(data.get("nextPageToken") or ""), int(data.get("count") or 0)
 
     def search_variants(
         self,
@@ -799,11 +1083,7 @@ class GigwaClient:
                 get_gt=False,
                 **common,
             )
-            resp = self._check(
-                self.request("POST", "/ga4gh/variants/search", json_body=body),
-                "variants/search",
-            )
-            data = resp.json()
+            data = self._post_search(body)
             variants = data.get("variants")
             if variants is None:  # tolerate a BrAPI-style {"result": {"data": [...]}} shape
                 variants = (data.get("result") or {}).get("data") or []
@@ -814,6 +1094,104 @@ class GigwaClient:
             if not page_token:
                 break
         return out[:max_variants]
+
+    def selection_chart(
+        self,
+        stat: str,
+        selection: VariantSelection,
+        *,
+        token: str | None,
+        sequence: str,
+        variant_type: str | None = None,
+        range_min: int | None = None,
+        range_max: int | None = None,
+        intervals: int = 100,
+        plot_groups: Sequence[GroupFilter] | None = None,
+    ) -> Any:
+        """Call one of Gigwa's per-interval statistics endpoints over a selection.
+
+        ``stat`` is a key of :data:`CHART_ENDPOINTS` (``maf``, ``missing``,
+        ``heterozygosity``, ``fst``, ``tajima_d``, ``density``) -- the endpoints behind the
+        Gigwa web UI's charts, computed server-side in MongoDB. Under *token* they read the
+        temporary variant collection :meth:`materialize_selection` built, so the result
+        honours the selection's genotype filters. Returns the decoded JSON: a
+        ``{position: value}`` object, or for ``tajima_d`` a list of two such objects
+        (Tajima's D, segregating sites).
+
+        On failure Gigwa answers 200 with an empty body and records the reason on the
+        token's progress indicator; that reason is raised as :class:`GigwaAPIError` (its
+        text says "temporary records" when the selection must be searched again).
+        """
+        try:
+            path = CHART_ENDPOINTS[stat]
+        except KeyError:
+            raise ValueError(f"Unknown statistic {stat!r}; expected one of {sorted(CHART_ENDPOINTS)}.") from None
+        body = selection.chart_body(
+            sequence=sequence, variant_type=variant_type, range_min=range_min,
+            range_max=range_max, intervals=intervals, plot_groups=plot_groups,
+        )
+        # These endpoints register their progress under the ``progressToken`` query
+        # parameter when given (else under the auth token, *reusing* the indicator the
+        # subset's search left there -- so it would read "Finding matching variants").
+        # A dedicated id gives the statistic its own indicator and keeps a statistic's
+        # error off the subset token's one. The temporary collection is still looked up
+        # from the auth token.
+        progress_id = f"chart_{uuid.uuid4().hex}"
+        resp = self._check(
+            self.run_with_search_progress(
+                lambda: self.request(
+                    "POST", f"/gigwa{path}", json_body=body, token=token,
+                    params={"progressToken": progress_id},
+                    extra_headers=selection.headers(), timeout=BULK_TRANSFER_TIMEOUT,
+                ),
+                token=token, progress_id=progress_id,
+                what=f"Calculating {stat} on {sequence}",
+            ),
+            path.lstrip("/"),
+        )
+        data: Any = None
+        if resp.content.strip():
+            try:
+                data = resp.json()
+            except ValueError:
+                data = None
+        if data is None:
+            self._raise_progress_error(token, path.lstrip("/"), progress_id=progress_id)
+            raise GigwaAPIError(
+                f"{path.lstrip('/')} returned no data (no result for this sequence/range?)"
+            )
+        return data
+
+    def callset_names(self, variant_set_db_id: str, *, samples: bool = False) -> list[str]:
+        """List the individual (or, with ``samples``, sample) ids of a project, as used in
+        group definitions -- ``POST /ga4gh/callsets/search``, whose results the Gigwa UI
+        itself lists in its group selectors (``workWithSamples`` switches it to samples)."""
+        names: list[str] = []
+        page_token: str | None = "0"
+        while page_token is not None:
+            resp = self._check(
+                self.request(
+                    "POST", "/ga4gh/callsets/search",
+                    json_body={
+                        "variantSetId": self._ga4gh_variant_set_id(variant_set_db_id),
+                        "pageSize": 10000,
+                        "pageToken": page_token,
+                    },
+                    extra_headers={"workWithSamples": "true"} if samples else None,
+                ),
+                "callsets/search",
+            )
+            try:
+                data = resp.json() or {}
+            except ValueError:
+                data = {}
+            for callset in data.get("callSets") or []:
+                name = callset.get("name") or str(callset.get("id") or "").rsplit("§", 1)[-1]
+                if name:
+                    names.append(str(name))
+            page_token = data.get("nextPageToken") or None
+        return names
+
 
     # -- sequences / references (GA4GH) ------------------------------------
     def list_sequences(self, variant_set_db_id: str) -> list[dict[str, Any]]:
@@ -1081,7 +1459,7 @@ class GigwaClient:
 
     # -- germplasm metadata (BrAPI) ---------------------------------------
     def distinct_individual_metadata(
-        self, module: str, *, individuals: Sequence[str] | None = None
+        self, module: str, *, individuals: Sequence[str] | None = None, samples: bool = False
     ) -> dict[str, list[str]]:
         """Discover per-individual metadata field names and their distinct values.
 
@@ -1090,14 +1468,16 @@ class GigwaClient:
         from (and, on builds where that path returns no ``additionalInfo``, more complete
         than) the BrAPI germplasm search :meth:`get_germplasm` also tries. ``individuals``
         optionally restricts value discovery to that subset (default: the whole module).
+        ``samples=True`` reads sample-level metadata (``/gigwa/distinctSampleMetadata``).
         """
+        endpoint = "distinctSampleMetadata" if samples else "distinctIndividualMetadata"
         resp = self._check(
             self.request(
                 "POST",
-                f"/gigwa/distinctIndividualMetadata/{module}",
+                f"/gigwa/{endpoint}/{module}",
                 json_body={"individuals": list(individuals)} if individuals else {},
             ),
-            "distinctIndividualMetadata",
+            endpoint,
         )
         try:
             data = resp.json()
@@ -1108,7 +1488,7 @@ class GigwaClient:
         return {str(k): [str(v) for v in (vs or [])] for k, vs in data.items()}
 
     def filter_individuals_by_metadata(
-        self, module: str, filters: dict[str, Sequence[str]]
+        self, module: str, filters: dict[str, Sequence[str]], *, samples: bool = False
     ) -> list[dict[str, Any]]:
         """Return individuals whose metadata matches *filters* (field name -> allowed
         values; multiple fields AND together, multiple values for one field OR together).
@@ -1118,14 +1498,24 @@ class GigwaClient:
         ``{"id": <individual name>, "additionalInfo": {field: value, ...}}``. An empty
         ``filters`` dict returns every individual with its full metadata (used by
         :meth:`get_germplasm` as its primary source).
+
+        ``samples=True`` queries sample-level metadata instead
+        (``/gigwa/filterSamplesFromMetadata/{module}``, the UI's "work with samples" mode);
+        each ``id`` is then a sample id. As in the UI, field names prefixed ``ind.`` (how
+        :meth:`distinct_individual_metadata` lists parent-individual fields in that mode)
+        filter on the sample's individual; the others on the sample itself.
         """
+        endpoint = "filterSamplesFromMetadata" if samples else "filterIndividualsFromMetadata"
+        if samples:
+            body: dict[str, Any] = {
+                "individual": {k[4:]: list(v) for k, v in filters.items() if k.startswith("ind.")},
+                "sample": {k: list(v) for k, v in filters.items() if not k.startswith("ind.")},
+            }
+        else:
+            body = {k: list(v) for k, v in filters.items()}
         resp = self._check(
-            self.request(
-                "POST",
-                f"/gigwa/filterIndividualsFromMetadata/{module}",
-                json_body={k: list(v) for k, v in filters.items()},
-            ),
-            "filterIndividualsFromMetadata",
+            self.request("POST", f"/gigwa/{endpoint}/{module}", json_body=body),
+            endpoint,
         )
         try:
             data = resp.json()

@@ -330,6 +330,22 @@ TOOL_CATALOG: dict[str, ToolInfo] = {
     "search_variants": ToolInfo(
         "Variant search", "Search variants server-side and write the matching list to CSV.",
         _SEARCH, _T_GENVAR),
+    # -- Groups & subsets --
+    "define_group": ToolInfo(
+        "Groups & subsets", "Name a group of individuals/samples (explicit ids or metadata).",
+        _HANDLE, _T_GENVAR),
+    "get_subset_progress": ToolInfo(
+        "Groups & subsets", "Report the status of a subset search started with wait=False.",
+        _HANDLE, _T_DATA),
+    "list_groups": ToolInfo(
+        "Groups & subsets", "List the session's groups and variant subsets.",
+        _RETRIEVE, _T_DATA),
+    "define_variant_subset": ToolInfo(
+        "Groups & subsets", "Filter variants in Gigwa on per-group MAF/missingness/heterozygosity and keep the result.",
+        _VARIANT_FILTER, _T_GENVAR),
+    "selection_profile": ToolInfo(
+        "Groups & subsets", "Gigwa-computed per-interval MAF/missing/het/Fst/Tajima's D/density over a subset.",
+        _STATS, _T_POPGEN),
     # -- Export --
     "list_export_formats": ToolInfo(
         "Export", "List export formats this instance supports, with type/ploidy compatibility.",
@@ -394,7 +410,7 @@ TOOL_CATALOG: dict[str, ToolInfo] = {
 # Registering the tool modules attaches their @mcp.tool() functions to `mcp`.
 from .tools import connection, genotype, metadata  # noqa: E402,F401
 from .tools import qc, diversity, audit  # noqa: E402,F401
-from .tools import search  # noqa: E402,F401
+from .tools import search, groups  # noqa: E402,F401
 
 
 def _apply_catalog_meta() -> None:
@@ -440,7 +456,6 @@ _PARAM_DESCRIPTIONS: dict[str, str] = {
     "ploidy": "Sample ploidy (default 2).",
     "skip_monomorphic": "Drop non-variant (monomorphic) markers during import.",
     "clear_project_data": "Replace any existing data in the project before importing.",
-    "wait": "Block until the job finishes (True, default) or return immediately once it's kicked off (False) -- an import returns a progress token to poll with get_import_progress, an export returns a download URL to poll with get_export_progress and retrieve with fetch_export_file.",
     "snp_xlsx": "Path to a DArTseq SNP xlsx report.",
     "silico_xlsx": "Path to a Silico-DArT xlsx report.",
     "vcf_path": "Path to the VCF file (.vcf or .vcf.gz) to import.",
@@ -469,6 +484,21 @@ _PARAM_DESCRIPTIONS: dict[str, str] = {
     "filters_json": "JSON object mapping each metadata field name to a list of acceptable values, e.g. {\"GroupK4\": [\"cA\"]} (see list_metadata_values for field/value names). Multiple fields AND together; multiple values for one field OR together.",
     "download_url": "Download URL returned by export_genotypes(..., wait=False), once get_export_progress reports the export complete.",
     "export_token": "The export's own token, from export_genotypes(..., wait=False)'s reply -- pins the check to that specific export. Omit only when at most one export is in flight at a time; Gigwa tracks one \"current export\" per token, so with no argument this falls back to the session's shared token and could report a different export's status.",
+    "min_het": "Minimum per-variant heterozygosity rate (0-1): share of heterozygous calls among non-missing genotypes, evaluated by Gigwa.",
+    "max_het": "Maximum per-variant heterozygosity rate (0-1), evaluated by Gigwa.",
+    "group_filters_json": "JSON list of per-group filters evaluated by Gigwa, e.g. [{\"group\": \"G1\", \"min_maf\": 0.05, \"max_missing\": 0.1, \"max_het\": 0.2}]. Each entry names a define_group group (or lists 'members' inline, or neither = everyone) with any of min_maf, max_maf (0-0.5), min_missing, max_missing, min_het, max_het (0-1), and optionally discriminate_with: the name of another group of the list, keeping only variants whose single dominant genotype differs between the two groups (Gigwa's 'Discriminate with'). Bounds are inclusive and all criteria of all groups must hold.",
+    "subset": "Name of a variant subset from define_variant_subset: reuses the result Gigwa already holds for it instead of re-filtering.",
+    "wait": "Block until the job finishes (True, default) or return immediately once it's kicked off (False) -- an import returns a progress token to poll with get_import_progress, an export returns a download URL to poll with get_export_progress and retrieve with fetch_export_file, and a variant subset is followed with get_subset_progress (tools given the subset wait for it).",
+    "page": "Page to start reading the subset at (0-based; pages of min(1000, max_variants) variants). The reply names the next page.",
+    "name": "Name to give it (reusing a name replaces the previous definition).",
+    "members": "Individual ids (or sample ids with entity='samples') of the project, as listed by Gigwa.",
+    "metadata_filters_json": "JSON object {field: [values]} selecting members from stored metadata (see list_metadata_values); fields AND together, values OR together. With entity='samples', prefix parent-individual fields with 'ind.'.",
+    "entity": "What group members are: 'individuals' (default) or 'samples' (Gigwa's 'work with samples' mode).",
+    "statistic": "Per-interval statistic Gigwa computes: maf, missing, heterozygosity, fst (needs 2+ groups), tajima_d or density.",
+    "sequence": "Chromosome/contig to profile (see list_sequences).",
+    "intervals": "Number of windows the sequence (or start-end range) is split into, 50-5000.",
+    "groups": "Names of the subset's groups whose genotypes the statistic is computed on; omit for all of them.",
+    "variant_type": "Restrict the profile to one variant type (e.g. SNP); omit for all.",
     "min_sample_call_rate": "Flag samples with call rate below this (0-1).",
     "min_marker_call_rate": "Flag markers with call rate below this (0-1).",
     "outlier_sd": "Flag points more than this many standard deviations from the mean.",

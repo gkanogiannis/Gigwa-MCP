@@ -49,7 +49,9 @@ from typing import Sequence
 import allel
 import numpy as np
 
+from .. import subsets
 from ..client import GigwaClient
+from ..exports import ExportSelection
 from ..errors import GigwaAPIError, GigwaError
 from ..identifiers import accession_name as _accession_name
 from ..identifiers import module_of, sample_name_map as _name_map
@@ -558,8 +560,15 @@ def load_genotypes(
     method: str = "vcf",
     region: str | None = None,
     individuals: Sequence[str] | None = None,
+    subset: str | None = None,
 ) -> GenotypeMatrix:
     """Load a variant set's genotypes as a :class:`GenotypeMatrix`.
+
+    ``subset`` (a name from ``define_variant_subset``) loads exactly that subset: Gigwa
+    exports the variants its search already selected -- the filters are never re-applied
+    here -- for the subset's group members (or ``individuals`` when given). It excludes
+    ``region`` (put the window in the subset) and ``method="allelematrix"`` (BrAPI cannot
+    express the subset's filters).
 
     ``method="vcf"`` (default): fetches via VCF, exactly one of two ways, decided for you
     -- see the module docstring for the reasoning:
@@ -588,6 +597,11 @@ def load_genotypes(
     Either way, ``max_markers`` selects the first N IDs in canonical Gigwa search order,
     applied after ``region``, so capped markers are chosen from within the window.
     """
+    if subset is not None:
+        return _load_subset(
+            client, variant_set_db_id, subset, max_markers=max_markers, method=method,
+            region=region, individuals=individuals, cache_dir=cache_dir, use_cache=use_cache,
+        )
     selected_ids = (
         _canonical_variant_ids(client, variant_set_db_id, max_markers, region)
         if max_markers else None
@@ -630,6 +644,67 @@ def load_genotypes(
     gm = _apply_region(gm, region)  # no-op when already filtered server-side by region
     if selected_ids is not None:
         return _select_variant_ids(gm, selected_ids)
+    return gm
+
+
+def _load_subset(
+    client: GigwaClient,
+    variant_set_db_id: str,
+    subset_name: str,
+    *,
+    max_markers: int | None,
+    method: str,
+    region: str | None,
+    individuals: Sequence[str] | None,
+    cache_dir: str | Path | None,
+    use_cache: bool,
+) -> GenotypeMatrix:
+    """Genotypes of a named variant subset, exported by Gigwa from the result it holds."""
+    if method != "vcf":
+        raise ValueError("subset cannot be combined with method='allelematrix'; use method='vcf'.")
+    if region is not None:
+        raise ValueError("subset cannot be combined with region; define the region in the subset.")
+    sub = subsets.get_subset(client, subset_name, variant_set_db_id)
+    members = list(individuals) if individuals else sub.selection.exported_members()
+    key = ("subset", sub.fingerprint, tuple(sorted(members)) if members else None)
+    gm = _FILTERED_SESSION_CACHE.get(key) if use_cache else None
+    if gm is None:
+        digest = hashlib.sha1((sub.fingerprint + "|" + ",".join(sorted(members))).encode()).hexdigest()[:12]
+        vcf_path = _cache_dir(cache_dir) / f"{_safe_name(variant_set_db_id)}__subset_{digest}.vcf"
+        if not (use_cache and vcf_path.exists() and vcf_path.stat().st_size > 64):
+            selection = sub.selection
+            notify(f"Exporting subset '{sub.name}' ({sub.count} variants) from Gigwa…")
+            subsets.run_with_subset(
+                client, sub,
+                lambda token: client.exports.export_and_wait(
+                    variant_set_db_id,
+                    vcf_path,
+                    ExportSelection(
+                        fmt="VCF",
+                        reference_name=selection.reference_name,
+                        start=selection.start,
+                        end=selection.end,
+                        selected_variant_types=selection.selected_variant_types,
+                        groups=selection.groups,
+                        work_with_samples=selection.work_with_samples,
+                        exported_individuals=members or None,
+                        token=token,
+                    ),
+                ),
+            )
+        gm = _parse_vcf(client, variant_set_db_id, _ensure_plain_vcf(vcf_path))
+        if use_cache:
+            _FILTERED_SESSION_CACHE[key] = gm
+    if max_markers:
+        variants, _, _ = subsets.browse_subset(
+            client, sub, page_size=min(max_markers, 1000), max_variants=max_markers
+        )
+        selected = [
+            _ga4gh_variant_id(v.get("variantDbId") or v.get("id"))
+            for v in variants[:max_markers]
+            if v.get("variantDbId") or v.get("id")
+        ]
+        return _select_variant_ids(gm, selected)
     return gm
 
 

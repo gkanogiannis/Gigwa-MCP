@@ -15,6 +15,7 @@ import httpx
 
 from .errors import GigwaAPIError, GigwaExportError
 from .progress import notify
+from .selection import GroupFilter
 
 if TYPE_CHECKING:
     from .client import GigwaClient
@@ -57,6 +58,13 @@ class ExportSelection:
     exported_individuals: Sequence[str] | None = None
     metadata_fields: Sequence[str] | None = None
     keep_on_server: bool = False
+    # Per-group genotype filters (see gigwa_mcp.selection); replaces the flat
+    # min_maf/max_maf/max_missing_data single-group shorthand when given.
+    groups: Sequence[GroupFilter] | None = None
+    work_with_samples: bool = False
+    # Run the export under this token instead of minting a dedicated one: a variant
+    # subset's token, whose temporary collection already holds the filtered variants.
+    token: str | None = None
 
 
 @dataclass(frozen=True)
@@ -123,6 +131,7 @@ class ExportService:
             page_size=100,
             page_token="0",
             get_gt=False,
+            groups=selection.groups,
         )
         if selection.selected_variant_types:
             body["selectedVariantTypes"] = selection.selected_variant_types
@@ -139,8 +148,13 @@ class ExportService:
         # Anonymous access has no credentials to mint one with, so it keeps sharing
         # the (tokenless) default -- concurrent anonymous exports were never isolated
         # from each other and this doesn't change that.
-        token = None if self.client.anonymous else self.client._request_token()
+        if selection.token is not None:
+            token = selection.token
+        else:
+            token = None if self.client.anonymous else self.client._request_token()
         headers = {"Authorization": f"Bearer {token}"} if token else {}
+        if selection.work_with_samples:
+            headers["workWithSamples"] = "true"
         response = self.client._check(
             self.client.request(
                 "POST", "/gigwa/exportData", json_body=body, headers=headers,

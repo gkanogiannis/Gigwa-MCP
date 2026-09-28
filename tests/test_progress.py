@@ -92,3 +92,13 @@ def test_progress_tool_surfaces_gigwa_and_network_errors_to_the_model():
         assert "internal detail" not in str(bug.value)
     finally:
         mcp._tool_manager.remove_tool("failing")
+
+
+def test_progress_summary_does_not_repeat_a_percentage_already_in_the_description():
+    from gigwa_mcp.client import ProgressStatus
+
+    searching = ProgressStatus(raw={"progressDescription": "Finding matching variants... 44%",
+                                    "currentStepProgress": 44})
+    assert searching.summary() == "Finding matching variants... 44%"
+    importing = ProgressStatus(raw={"progressDescription": "Importing", "currentStepProgress": 30})
+    assert importing.summary() == "Importing | 30%"

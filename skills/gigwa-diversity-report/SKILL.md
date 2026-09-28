@@ -36,6 +36,14 @@ All steps drive the `gigwa-mcp` MCP server's read-only `diversity_*` tools.
   - an explicit `groups_json` mapping (accepted by `diversity_fst` / `diversity_by_group`).
 - No groups → run the ungrouped core (steps 1–4) only.
 
+## Analysing a filtered subset
+
+To run the report on variants filtered by Gigwa (e.g. MAF ≥ 5 % and ≤ 10 % missing data
+within a group), first build a subset with **gigwa-group-filtering**
+(`define_variant_subset`), then pass `subset="<name>"` to each `diversity_*` tool: Gigwa
+exports only that subset's variants for its groups' members. `subset` replaces `region`
+and requires the default `method="vcf"`.
+
 ## Step-by-step workflow
 
 1. **Dataset summary** — `diversity_summary(variant_set_db_id)`: per-marker MAF, He, Ho,

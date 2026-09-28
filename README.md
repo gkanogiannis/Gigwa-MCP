@@ -102,8 +102,8 @@ never modify the data in Gigwa.
 | ------ | -------------- |
 | `list_variant_sets` | List every run with its exact BrAPI `variantSetDbId` (the id the analysis tools take) |
 | `list_sequences` | List the chromosomes/contigs of a variant set (valid `reference_name` values) |
-| `count_variants` | Count variants matching region / MAF / missing-data filters, server-side (no download) |
-| `search_variants` | Search variants server-side and write the matching list (`variant_search.csv`) |
+| `count_variants` | Count variants matching region / MAF / missing-data / heterozygosity filters (flat or per group), server-side (no download) |
+| `search_variants` | Search variants server-side and write the matching list (`variant_search.csv`); pages through a subset |
 | `list_export_formats` | List the export formats this build actually offers, with variant-type/ploidy limits |
 | `export_genotypes` | Export a variant set — or a filtered/selected subset — to a file; `wait=False` for long runs |
 | `get_export_progress` | Status of this session's running export (started with `wait=False`) |
@@ -112,6 +112,16 @@ never modify the data in Gigwa.
 | `get_germplasm_metadata` | Pull server-stored per-individual attributes (`germplasm_metadata.csv`) |
 | `list_metadata_values` | List individual-metadata field names and their distinct values |
 | `filter_individuals_by_metadata` | Select individuals by metadata field/value filters (feeds `export_genotypes`) |
+
+#### Groups & subsets (read-only, evaluated by Gigwa)
+
+| Tool | What it does |
+| ------ | -------------- |
+| `define_group` | Name a group of individuals or samples (explicit ids or metadata), validated against the project |
+| `define_variant_subset` | Have Gigwa filter variants on per-group MAF / missing data / heterozygosity and keep the result by name |
+| `get_subset_progress` | Gigwa's progress on a subset search started with `wait=False` (or its count once ready) |
+| `list_groups` | List the session's groups and subsets |
+| `selection_profile` | Gigwa-computed per-window MAF, missing data, heterozygosity, Fst, Tajima's D or density over a subset |
 
 #### QC & diversity (read-only)
 
@@ -514,16 +524,33 @@ args `max_markers` / `method` (`"vcf"` | `"allelematrix"`), and `region`
 | ------ | --------------- | ------------------ |
 | `list_variant_sets` | (none) | every run's exact `variantSetDbId` + counts |
 | `list_sequences` | `variant_set_db_id` | chromosomes/contigs (valid `reference_name`s) |
-| `count_variants` | `reference_name?`, `start?`, `end?`, `min_maf?`, `max_maf?`, `max_missing_data?` | server-side match count (no download) |
-| `search_variants` | same filters as `count_variants`, `max_variants=100000` | `variant_search.csv` (id/chrom/pos/ref/alt) |
+| `count_variants` | `reference_name?`, `start?`, `end?`, `min_maf?`, `max_maf?`, `max_missing_data?`, `min_het?`, `max_het?`, `group_filters_json?`, `subset?` | server-side match count (no download) |
+| `search_variants` | same filters as `count_variants`, `page=0`, `max_variants=100000` | `variant_search.csv` (id/chrom/pos/ref/alt); with `subset`, pages Gigwa's stored result |
 | `list_export_formats` | (none) | the instance's export handlers + type/ploidy limits |
-| `export_genotypes` | `output_path`, `format="VCF"`, plus `region?`, `min_maf?`, `individuals?`, `metadata_fields?`, `wait=True` | writes the export file; `wait=False` returns a URL or saves an immediately returned file |
+| `export_genotypes` | `output_path`, `format="VCF"`, plus `region?`, `min_maf?`, `group_filters_json?`, `subset?`, `individuals?`, `metadata_fields?`, `wait=True` | writes the export file; `wait=False` returns a URL or saves an immediately returned file |
 | `get_export_progress` | (none) | status of this session's export |
 | `fetch_export_file` | `download_url`, `output_path` | writes the completed export |
 | `search_callsets` | `variant_set_db_id` | `sample_metadata.csv` (per-sample attributes) |
 | `get_germplasm_metadata` | `variant_set_db_id` | `germplasm_metadata.csv` (join on `sample_name`) |
 | `list_metadata_values` | `variant_set_db_id` | metadata fields + distinct values |
 | `filter_individuals_by_metadata` | `variant_set_db_id`, `filters_json` | matching individual identifiers |
+
+#### Groups & subsets
+
+| Tool | Key arguments | Returns / writes |
+| ------ | --------------- | ------------------ |
+| `define_group` | `variant_set_db_id`, `name`, `members?` **or** `metadata_filters_json?`, `entity="individuals"` | group size + ids not found in the project |
+| `define_variant_subset` | `variant_set_db_id`, `name?`, `region?`, `selected_variant_types?`, `group_filters_json?` (or flat `min_maf?`, `max_missing_data?`, `min_het?`, `max_het?`), `wait=True` | variant count (Gigwa's progress relayed meanwhile); `wait=False` returns at once — follow with `get_subset_progress`; the subset is reusable as `subset=` |
+| `get_subset_progress` | `subset` | still filtering (Gigwa's step + %), failed, or ready with its count |
+| `list_groups` | (none) | groups and subsets of the session |
+| `selection_profile` | `subset`, `statistic`, `sequence`, `start?`, `end?`, `intervals=100`, `groups?` | `profile_<statistic>_<sequence>.csv` + summary |
+
+`group_filters_json` is a list with one entry per group, e.g.
+`[{"group": "G1", "min_maf": 0.05, "max_missing": 0.1, "max_het": 0.2}, {"group": "G2", "max_missing": 0.2}]`
+(0-1 fractions; Gigwa applies them inclusively and requires all of them). Gigwa keeps a
+filtered search result per token, so each subset gets its own token; it is browsed,
+exported and charted without re-filtering, and rebuilt automatically if it expires. Every
+QC/diversity tool also takes `subset=` to analyse only that subset's variants and members.
 
 **QC & diversity** (output files listed in [Output files](#output-files))
 
@@ -563,6 +590,7 @@ support them, and in directories like glama.ai).
 | `qc_triage` | `variant_set_db_id` | full QC suite + a go/no-go verdict for downstream analysis |
 | `explore_instance` | (none) | server info → list content/variant sets → instance-wide audit |
 | `region_scan` | `variant_set_db_id`, `region` | sequences → count/search variants → region-filtered diversity |
+| `group_filtering` | `variant_set_db_id`, `request` | groups → per-group MAF/missing/het subset in Gigwa → browse/profile/export/reuse |
 
 **Resources** — read-only endpoints a client can fetch:
 
@@ -575,7 +603,7 @@ support them, and in directories like glama.ai).
 
 The repo also ships **Agent Skills** (the open [`SKILL.md` standard](https://github.com/agentskills/agentskills))
 under [`skills/`](skills/) — task-oriented guides that teach an agent how to drive the tools
-above. They mirror the five workflow prompts and are discoverable on the
+above. They mirror the six workflow prompts and are discoverable on the
 [LobeHub Skills Marketplace](https://lobehub.com/skills) and other `SKILL.md` directories.
 The capability stays in the MCP server; the skills just sequence and explain the tools.
 
@@ -586,6 +614,7 @@ The capability stays in the MCP server; the skills just sequence and explain the
 | `gigwa-qc-triage` | `qc_triage` | full QC suite on an imported run → go/no-go verdict |
 | `gigwa-explore-instance` | `explore_instance` | no-arg instance survey + health check |
 | `gigwa-region-scan` | `region_scan` | variant density + local diversity within one region |
+| `gigwa-group-filtering` | `group_filtering` | groups of individuals/samples → Gigwa-side per-group MAF/missing/het filtering → reusable subset |
 
 See [`skills/README.md`](skills/README.md) for the layout, prerequisites, and how to validate
 or install them.
