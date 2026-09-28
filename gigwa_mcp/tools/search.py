@@ -377,6 +377,8 @@ def export_genotypes(
         result = run(lambda sel: client.start_export_result(
             variant_set_db_id, selection=sel, immediate_dest_path=dest
         ))
+        if sub is not None and result.completed_path is None:
+            sub.async_export = True  # never drop its collection while Gigwa still exports it
         if result.completed_path is not None:
             size = result.completed_path.stat().st_size
             media = f"; media type {result.media_type}" if result.media_type else ""

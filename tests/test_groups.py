@@ -44,6 +44,8 @@ class FakeGigwa:
         self.search_polls: list[tuple[str | None, str]] = []  # (progressToken, auth token)
         self.fail_search = False
         self.chart_progress_ids: list[str | None] = []
+        self.dropped: list[tuple[str, str, str | None]] = []  # (module, token, clearToken)
+        self.export_running = False
 
     def variants(self, n: int) -> list[dict]:
         return [
@@ -99,7 +101,13 @@ class FakeGigwa:
                                   headers={"content-type": "application/json"})
         if path == "/gigwa/tajimaDData":
             return httpx.Response(200, json=[{"100": -1.2, "200": 0.4}, {"100": 3, "200": 5}])
+        if path.startswith("/gigwa/dropTempCol/"):
+            self.dropped.append((path.rsplit("/", 1)[1], token, request.url.params.get("clearToken")))
+            self.temp.pop(token, None)
+            return httpx.Response(200, json={"success": True})
         if path == "/gigwa/progress":
+            if token.startswith("export_") and self.export_running:
+                return httpx.Response(200, json={"progressDescription": "Exporting", "complete": False})
             if self.gate is not None and not self.gate.is_set():
                 self.search_polls.append((request.url.params.get("progressToken"), token))
                 if self.release_after is not None and len(self.search_polls) >= self.release_after:
@@ -475,7 +483,9 @@ def test_background_subset_failure_is_reported(gigwa):
 
     gigwa.fail_search = True
     group_tools.define_variant_subset.fn(VS, name="S1", min_maf=0.05, wait=False)
-    subsets.get_subset(server.get_client(), "S1", wait=False).job.join(5)
+    job = subsets.get_subset(server.get_client(), "S1", wait=False).job
+    if job is not None:
+        job.join(5)
     assert "failed" in group_tools.get_subset_progress("S1")
     with pytest.raises(GigwaError, match="could not be built"):
         search_tools.count_variants.fn(VS, subset="S1")
@@ -509,3 +519,174 @@ def test_selection_profile_relays_gigwa_progress_under_its_own_id(gigwa, notes, 
     # owns the temporary collection the statistic reads).
     assert gigwa.search_polls and all(p == (progress_id, token) for p in gigwa.search_polls)
     assert ("Calculating MAF on sequence chr1 | 60%", 60, 100) in notes
+
+
+# ---------------------------------------------------------------- releasing resources
+def _token(name):
+    return subsets.get_subset(server.get_client(), name, wait=False).token
+
+
+def test_drop_subset_releases_collection_and_token(gigwa):
+    group_tools.define_variant_subset.fn(VS, name="S1", min_maf=0.05)
+    token = _token("S1")
+    out = group_tools.drop_subset("S1")
+    assert "released on the Gigwa server" in out
+    assert gigwa.dropped == [("MOD", token, "true")]  # authenticated with the subset token
+    assert token not in gigwa.temp
+    from gigwa_mcp.errors import GigwaError
+
+    with pytest.raises(GigwaError, match="Unknown subset 'S1'"):
+        search_tools.count_variants.fn(VS, subset="S1")
+
+
+def test_redefining_a_subset_releases_the_replaced_one(gigwa):
+    group_tools.define_variant_subset.fn(VS, name="S1", min_maf=0.05)
+    old = _token("S1")
+    group_tools.define_variant_subset.fn(VS, name="S1", min_maf=0.1)
+    assert gigwa.dropped == [("MOD", old, "true")]
+    assert _token("S1") != old and _token("S1") in gigwa.temp
+
+
+def test_a_subset_in_use_is_released_when_the_call_ends(gigwa):
+    group_tools.define_variant_subset.fn(VS, name="S1", min_maf=0.05)
+    token = _token("S1")
+    sub = subsets.get_subset(server.get_client(), "S1")
+    seen = {}
+
+    def operation(tok):
+        seen["outcome"] = group_tools.drop_subset("S1")  # dropped while being read
+        seen["dropped_meanwhile"] = list(gigwa.dropped)
+        return tok
+
+    subsets.run_with_subset(server.get_client(), sub, operation)
+    assert "still in use" in seen["outcome"] and seen["dropped_meanwhile"] == []
+    assert gigwa.dropped == [("MOD", token, "true")]  # released once the call ended
+
+
+def test_a_running_background_search_is_released_when_it_ends(gigwa):
+    gigwa.gate = threading.Event()
+    group_tools.define_variant_subset.fn(VS, name="S1", min_maf=0.05, wait=False)
+    sub = subsets.get_subset(server.get_client(), "S1", wait=False)
+    job = sub.job
+    assert "still in use" in group_tools.drop_subset("S1")
+    assert gigwa.dropped == []
+    gigwa.gate.set()
+    job.join(5)
+    assert gigwa.dropped == [("MOD", sub.token, "true")]
+
+
+def test_a_running_non_waiting_export_is_never_dropped(gigwa, tmp_path, monkeypatch):
+    group_tools.define_variant_subset.fn(VS, name="S1", min_maf=0.05)
+    sub = subsets.get_subset(server.get_client(), "S1")
+    monkeypatch.setattr(server.get_client(), "start_export_result",
+                        lambda vs, selection, immediate_dest_path=None: __import__(
+                            "gigwa_mcp.exports", fromlist=["ExportStartResult"]
+                        ).ExportStartResult(download_url="/gigwa/tmp/x.zip", token=selection.token))
+    search_tools.export_genotypes.fn(VS, str(tmp_path / "x.zip"), subset="S1", wait=False)
+    assert sub.async_export
+    gigwa.export_running = True
+    assert "left to Gigwa's own expiry" in group_tools.drop_subset("S1")
+    assert gigwa.dropped == []
+
+
+def test_drop_all_subsets(gigwa):
+    group_tools.define_variant_subset.fn(VS, name="A", min_maf=0.05)
+    group_tools.define_variant_subset.fn(VS, name="B", max_het=0.1)
+    out = group_tools.drop_subset("*")
+    assert "Subset 'A' dropped" in out and "Subset 'B' dropped" in out
+    assert len(gigwa.dropped) == 2 and not subsets.list_subsets()
+
+
+def test_expired_token_leftovers_are_released_after_a_rebuild(gigwa, tmp_path):
+    group_tools.define_variant_subset.fn(VS, name="S1", min_maf=0.05)
+    old = _token("S1")
+    gigwa.temp.pop(old)  # records purged server-side
+    group_tools.selection_profile.fn("S1", "maf", "chr1", output_dir=str(tmp_path))
+    assert ("MOD", old, "true") in gigwa.dropped and _token("S1") != old
+
+
+def test_switching_server_releases_the_old_servers_subsets(gigwa, monkeypatch):
+    from gigwa_mcp.tools import connection
+
+    group_tools.define_variant_subset.fn(VS, name="S1", min_maf=0.05)
+    token = _token("S1")
+    monkeypatch.setattr(connection, "_verify_and_describe", lambda client: "ok")
+    out = connection.gigwa_connect("http://elsewhere/gigwa", anonymous=True)
+    assert "Released 1/1 subset(s) on the previous server (S1)" in out
+    assert gigwa.dropped == [("MOD", token, "true")] and not subsets.list_subsets()
+
+
+def test_reconnecting_to_the_same_server_keeps_subsets(gigwa, monkeypatch):
+    from gigwa_mcp.tools import connection
+
+    group_tools.define_variant_subset.fn(VS, name="S1", min_maf=0.05)
+    monkeypatch.setattr(connection, "_verify_and_describe", lambda client: "ok")
+    monkeypatch.setattr(connection, "GigwaClient", lambda config: server.get_client().__class__(config))
+    connection.gigwa_connect("http://test/gigwa", anonymous=True)
+    assert gigwa.dropped == [] and [s.name for s in subsets.list_subsets()] == ["S1"]
+
+
+def test_shutdown_hook_releases_every_subset(gigwa):
+    group_tools.define_variant_subset.fn(VS, name="A", min_maf=0.05)
+    group_tools.define_variant_subset.fn(VS, name="B", max_het=0.1)
+    server.release_subsets()
+    assert len(gigwa.dropped) == 2 and not subsets.list_subsets()
+    assert not gigwa.temp  # both temporary collections gone
+
+
+def test_shutdown_forces_release_of_subsets_in_use_and_aborts_running_searches(gigwa):
+    gigwa.gate = threading.Event()
+    group_tools.define_variant_subset.fn(VS, name="BG", min_maf=0.05, wait=False)
+    bg = subsets.get_subset(server.get_client(), "BG", wait=False)
+    gigwa.gate.set()  # (the fake never needs the abort to unblock)
+    gigwa.gate = None
+    group_tools.define_variant_subset.fn(VS, name="BUSY", max_het=0.1)
+    busy = subsets.get_subset(server.get_client(), "BUSY")
+    busy.users = 1  # a tool call is reading it right now
+    bg.job = threading.Thread(target=lambda: threading.Event().wait(0.5))
+    bg.job.start()  # still "running"
+
+    server.release_subsets()
+    dropped = {t for _, t, _ in gigwa.dropped}
+    assert busy.token in dropped and bg.token in dropped  # nothing deferred at shutdown
+    assert [p for p, _, _ in gigwa.requests if p == "/gigwa/abortProcess"]  # search aborted first
+
+
+def test_shutdown_hook_survives_a_held_registry_lock(gigwa):
+    group_tools.define_variant_subset.fn(VS, name="S1", min_maf=0.05)
+    with subsets._REGISTRY.lock:  # e.g. SIGTERM landing while a main-thread tool holds it
+        server.release_subsets()
+    assert len(gigwa.dropped) == 1
+
+
+def test_deferred_release_on_server_switch_keeps_the_old_client_usable(gigwa, monkeypatch):
+    from gigwa_mcp.tools import connection
+
+    group_tools.define_variant_subset.fn(VS, name="S1", min_maf=0.05)
+    sub = subsets.get_subset(server.get_client(), "S1")
+    old_client = server.get_client()
+    monkeypatch.setattr(connection, "_verify_and_describe", lambda client: "ok")
+
+    def operation(token):  # the switch happens while S1 is being read
+        connection.gigwa_connect("http://elsewhere/gigwa", anonymous=True)
+        return token
+
+    subsets.run_with_subset(old_client, sub, operation)
+    assert gigwa.dropped == [("MOD", sub.token, "true")]  # released afterwards, not failed
+
+
+def test_forced_release_keeps_the_token_when_the_search_will_not_stop(gigwa, monkeypatch):
+    monkeypatch.setattr(subsets, "ABORT_GRACE", 0.05)
+    group_tools.define_variant_subset.fn(VS, name="S1", min_maf=0.05)
+    sub = subsets.get_subset(server.get_client(), "S1")
+    stop = threading.Event()
+    sub.job = threading.Thread(target=stop.wait, args=(5,))
+    sub.job.start()  # a search that ignores the abort
+    try:
+        server.release_subsets()
+    finally:
+        stop.set()
+    abort_params = [p for p, _, _ in gigwa.requests if p == "/gigwa/abortProcess"]
+    assert abort_params
+    # collection dropped, token kept (None = no clearToken) so Gigwa's expiry catches leftovers
+    assert gigwa.dropped == [("MOD", sub.token, None)]

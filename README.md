@@ -121,6 +121,7 @@ never modify the data in Gigwa.
 | `define_variant_subset` | Have Gigwa filter variants on per-group MAF / missing data / heterozygosity and keep the result by name |
 | `get_subset_progress` | Gigwa's progress on a subset search started with `wait=False` (or its count once ready) |
 | `list_groups` | List the session's groups and subsets |
+| `drop_subset` | Discard a subset (or `"*"` for all) and free its temporary collection/token on Gigwa |
 | `selection_profile` | Gigwa-computed per-window MAF, missing data, heterozygosity, Fst, Tajima's D or density over a subset |
 
 #### QC & diversity (read-only)
@@ -543,13 +544,18 @@ args `max_markers` / `method` (`"vcf"` | `"allelematrix"`), and `region`
 | `define_variant_subset` | `variant_set_db_id`, `name?`, `region?`, `selected_variant_types?`, `group_filters_json?` (or flat `min_maf?`, `max_missing_data?`, `min_het?`, `max_het?`), `wait=True` | variant count (Gigwa's progress relayed meanwhile); `wait=False` returns at once — follow with `get_subset_progress`; the subset is reusable as `subset=` |
 | `get_subset_progress` | `subset` | still filtering (Gigwa's step + %), failed, or ready with its count |
 | `list_groups` | (none) | groups and subsets of the session |
+| `drop_subset` | `subset` (or `"*"`) | frees the subset's temporary collection + token on the server |
 | `selection_profile` | `subset`, `statistic`, `sequence`, `start?`, `end?`, `intervals=100`, `groups?` | `profile_<statistic>_<sequence>.csv` + summary |
 
 `group_filters_json` is a list with one entry per group, e.g.
 `[{"group": "G1", "min_maf": 0.05, "max_missing": 0.1, "max_het": 0.2}, {"group": "G2", "max_missing": 0.2}]`
 (0-1 fractions; Gigwa applies them inclusively and requires all of them). Gigwa keeps a
 filtered search result per token, so each subset gets its own token; it is browsed,
-exported and charted without re-filtering, and rebuilt automatically if it expires. Every
+exported and charted without re-filtering, and rebuilt automatically if it expires.
+Those server-side resources are released (`dropTempCol` + `clearToken`, as the Gigwa UI
+does) when a subset is redefined or dropped, when `gigwa_connect` moves to another
+server, and when the MCP server shuts down — never while a search, tool call or
+non-waiting export still reads them. Every
 QC/diversity tool also takes `subset=` to analyse only that subset's variants and members.
 
 **QC & diversity** (output files listed in [Output files](#output-files))

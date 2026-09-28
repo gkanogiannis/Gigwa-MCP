@@ -78,6 +78,9 @@ Semantics to keep in mind (and to tell the user when relevant):
    - any QC/diversity tool with `subset="S1"` (e.g. `diversity_pca(variant_set_db_id, subset="S1")`)
      — Gigwa exports only the subset's variants for the groups' members.
 7. `list_groups()` recalls what exists in the session.
+8. **Clean up** — once a subset is no longer needed (e.g. exported), `drop_subset("S1")`
+   frees what Gigwa keeps for it (temporary collection + token); `"*"` drops them all.
+   Redefining a name, switching server and shutting down do this automatically.
 
 ## Do / don't
 

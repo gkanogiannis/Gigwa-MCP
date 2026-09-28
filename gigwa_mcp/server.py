@@ -148,6 +148,20 @@ def get_client() -> GigwaClient:
     return _client
 
 
+def release_subsets() -> None:
+    """Shutdown hook: release the Gigwa temporary collections and tokens of every
+    subset of this session (the equivalent of the Gigwa UI dropping its collection when
+    the page is closed). Best-effort and time-bounded; Gigwa expires them anyway."""
+    if _client is None:
+        return
+    from . import subsets
+
+    try:
+        subsets.discard_server_subsets(_client, force=True)
+    except Exception:  # noqa: BLE001 - never block or fail a shutdown
+        pass
+
+
 def set_client(client: GigwaClient | None) -> GigwaClient | None:
     """Install *client* as the process-wide client and return the previous one, if any.
 
@@ -334,6 +348,9 @@ TOOL_CATALOG: dict[str, ToolInfo] = {
     "define_group": ToolInfo(
         "Groups & subsets", "Name a group of individuals/samples (explicit ids or metadata).",
         _HANDLE, _T_GENVAR),
+    "drop_subset": ToolInfo(
+        "Groups & subsets", "Discard a subset and free its temporary collection/token on Gigwa.",
+        _HANDLE, _T_DATA),
     "get_subset_progress": ToolInfo(
         "Groups & subsets", "Report the status of a subset search started with wait=False.",
         _HANDLE, _T_DATA),

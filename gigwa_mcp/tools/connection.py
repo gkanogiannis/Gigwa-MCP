@@ -7,6 +7,7 @@ from typing import Any
 
 from ..client import GigwaClient
 from ..config import GigwaConfig
+from .. import subsets
 from ..server import get_client, mcp, set_client
 
 
@@ -93,10 +94,23 @@ def gigwa_connect(url: str, profile: str | None = None, anonymous: bool = False)
         set_client(previous)
         new_client.close()
         raise
-    # Success: tear down the old connection's HTTP pool (the singleton is otherwise never closed).
-    if previous is not None and previous is not new_client:
+    # Success. Subsets built on the old server are unusable from now on: release their
+    # temporary collections and tokens there first (as the Gigwa UI does when switching
+    # database), while the old client is still open. Same server: they remain valid.
+    released, keep_previous_open = "", False
+    if previous is not None and str(previous.config.base_url) != str(new_client.config.base_url):
+        outcomes = subsets.discard_server_subsets(previous)
+        if outcomes:
+            released = (
+                f"\nReleased {sum(o == 'released' for o in outcomes.values())}/{len(outcomes)} "
+                f"subset(s) on the previous server ({', '.join(outcomes)})."
+            )
+        # A subset still in use is released when that use ends -- through the old client.
+        keep_previous_open = "deferred" in outcomes.values()
+    # Tear down the old connection's HTTP pool (the singleton is otherwise never closed).
+    if previous is not None and previous is not new_client and not keep_previous_open:
         previous.close()
-    return "Switched Gigwa connection.\n" + summary
+    return "Switched Gigwa connection.\n" + summary + released
 
 
 @mcp.tool()

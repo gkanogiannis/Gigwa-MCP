@@ -249,6 +249,43 @@ def get_subset_progress(subset: str) -> str:
     return subsets.subset_status(client, subsets.get_subset(client, subset, wait=False))
 
 
+_RELEASE_WORDING = {
+    "released": "its temporary collection and token were released on the Gigwa server",
+    "deferred": "it is still in use (search or another tool call); its Gigwa resources will "
+                "be released as soon as that finishes",
+    "export-running": "a non-waiting export still reads it on the server, so its Gigwa "
+                      "resources are left to Gigwa's own expiry cleanup",
+}
+
+
+@mcp.tool()
+def drop_subset(subset: str) -> str:
+    """Discard a variant subset and free what Gigwa keeps for it on the server.
+
+    Drops the subset's temporary variant collection and invalidates its dedicated token
+    (Gigwa's ``dropTempCol`` with ``clearToken``, what the web UI does when leaving a
+    database). Use it once a subset is no longer needed -- e.g. after its export -- on
+    large databases where that collection can be big; Gigwa would otherwise keep it until
+    the token expires. The name is then free; redefining it with
+    ``define_variant_subset`` runs the search again. ``"*"`` drops every subset.
+    """
+    client = get_client()
+    if subset == "*":
+        outcomes = subsets.discard_server_subsets(client, timeout=None)
+        if not outcomes:
+            return "No subsets to drop."
+        return "\n".join(
+            f"Subset '{name}' dropped: {_RELEASE_WORDING.get(o, 'but releasing its Gigwa resources ' + o)}."
+            for name, o in outcomes.items()
+        )
+    sub = subsets.get_subset(client, subset, wait=False)
+    outcome = subsets.discard_subset(client, sub)
+    return (
+        f"Subset '{sub.name}' dropped: "
+        f"{_RELEASE_WORDING.get(outcome, 'but releasing its Gigwa resources ' + outcome + ' (Gigwa will expire them)')}."
+    )
+
+
 def _series_frame(stat: str, data) -> pd.DataFrame:
     """Gigwa returns {position: value} (a list of two such maps for tajima_d)."""
     if stat == "tajima_d" and isinstance(data, list):

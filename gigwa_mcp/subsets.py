@@ -18,11 +18,23 @@ re-runs the search and retries once (:func:`run_with_subset`).
 
 State is per process and per Gigwa server: entries remember the server they were made
 on and are refused after ``gigwa_connect`` switches to another one.
+
+Releasing server resources. Gigwa drops a token's temporary collection by itself only
+when the token expires (or on logout / webapp restart); its web UI also calls
+``/gigwa/dropTempCol`` when the user switches database or leaves the page. This server
+does the equivalent (:func:`discard_subset`, which also clears the subset's token) when
+it knows a collection is no longer needed: a subset is redefined under the same name or
+explicitly dropped (``drop_subset``), ``gigwa_connect`` moves to another server, or the
+process shuts down. Never while the collection may still be read: a subset whose search
+is still running (``wait=False``) or that another tool call is using is released as soon
+as that finishes; one with a non-waiting export still running server-side is left to
+Gigwa's own expiry cleanup.
 """
 
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -42,6 +54,12 @@ from .selection import (
 )
 
 T = TypeVar("T")
+log = logging.getLogger(__name__)
+
+# Upper bound for one dropTempCol call made while shutting down or switching servers.
+RELEASE_TIMEOUT = 10.0
+# How long a forced release waits for an aborted search to actually stop writing.
+ABORT_GRACE = 5.0
 
 # Text Gigwa records when its per-interval statistics find no temporary records
 # (MgdbDao.MESSAGE_TEMP_RECORDS_NOT_FOUND: "Unable to find temporary records: please
@@ -74,10 +92,21 @@ class Subset:
     # Background search started by define_variant_subset(wait=False), and how it ended.
     job: threading.Thread | None = field(default=None, repr=False, compare=False)
     failure: BaseException | None = field(default=None, repr=False, compare=False)
+    # Lifecycle: tool calls currently reading the collection, a non-waiting export
+    # started from it, and whether it was discarded (then released once idle).
+    users: int = field(default=0, repr=False, compare=False)
+    async_export: bool = field(default=False, repr=False, compare=False)
+    retired: bool = field(default=False, repr=False, compare=False)
+    released: bool = field(default=False, repr=False, compare=False)
+    release_client: GigwaClient | None = field(default=None, repr=False, compare=False)
 
     @property
     def running(self) -> bool:
         return self.job is not None and self.job.is_alive()
+
+    @property
+    def module(self) -> str:
+        return self.selection.module
 
     @property
     def fingerprint(self) -> str:
@@ -89,7 +118,9 @@ class Subset:
 class _Registry:
     groups: dict[str, GroupDefinition] = field(default_factory=dict)
     subsets: dict[str, Subset] = field(default_factory=dict)
-    lock: threading.Lock = field(default_factory=threading.Lock)
+    # Reentrant: the SIGTERM shutdown hook runs on the main thread, which may already hold
+    # it (plain tools run there in stdio mode) -- a plain Lock would deadlock the exit.
+    lock: threading.RLock = field(default_factory=threading.RLock)
 
 
 _REGISTRY = _Registry()
@@ -260,22 +291,29 @@ def create_subset(
                 )
             except BaseException as exc:  # noqa: BLE001 - surfaced by subset_status / ensure_ready
                 subset.failure = exc
+            finally:
+                subset.job = None  # done: `running` must not see this very thread as busy
+                if subset.retired:  # discarded while its search was running
+                    _release_if_idle(subset)
 
         subset.job = threading.Thread(target=search, name=f"gigwa-subset-{name}", daemon=True)
     with _REGISTRY.lock:
-        replaced = subset.name in _REGISTRY.subsets
+        previous = _REGISTRY.subsets.get(subset.name)
         _REGISTRY.subsets[subset.name] = subset
     if subset.job is not None:
         subset.job.start()
-    return subset, replaced
+    if previous is not None and previous is not subset:
+        discard_subset(client, previous)  # its collection would otherwise linger until expiry
+    return subset, previous is not None
 
 
 def ensure_ready(client: GigwaClient, subset: Subset) -> Subset:
     """Wait for a background subset search to finish (relaying its progress), then raise
     its failure, if it failed."""
-    if subset.running:
+    job = subset.job
+    if job is not None and job.is_alive():
         client.follow_search_progress(
-            subset.job, token=subset.token,
+            job, token=subset.token,
             what=f"Waiting for subset '{subset.name}': finding matching variants",
         )
     if subset.failure is not None:
@@ -327,8 +365,13 @@ def list_subsets() -> list[Subset]:
 
 def refresh_subset(client: GigwaClient, subset: Subset) -> Subset:
     """Re-mint the subset's token and re-run its search (expired token / lost records)."""
+    if subset.retired:
+        raise GigwaError(f"Subset '{subset.name}' was dropped; define it again to use it.")
+    old_token = subset.token
     token, count = _materialize(client, subset.selection)
     subset.token, subset.count, subset.job, subset.failure = token, count, None, None
+    if old_token:  # whatever is left under the replaced token is now unreachable
+        _drop_quietly(client, subset.module, old_token)
     return subset
 
 
@@ -341,14 +384,119 @@ def _is_stale(exc: Exception) -> bool:
 def run_with_subset(client: GigwaClient, subset: Subset, operation: Callable[[str | None], T]) -> T:
     """Run ``operation(token)``; if Gigwa says the token or its temporary records are gone,
     rebuild the subset once and retry."""
+    with _REGISTRY.lock:
+        subset.users += 1
     try:
+        try:
+            return operation(subset.token)
+        except GigwaError as exc:
+            if not _is_stale(exc):
+                raise
+        notify(f"Subset '{subset.name}' expired on the server; searching again…")
+        refresh_subset(client, subset)
         return operation(subset.token)
-    except GigwaError as exc:
-        if not _is_stale(exc):
-            raise
-    notify(f"Subset '{subset.name}' expired on the server; searching again…")
-    refresh_subset(client, subset)
-    return operation(subset.token)
+    finally:
+        with _REGISTRY.lock:
+            subset.users -= 1
+        if subset.retired:
+            _release_if_idle(subset)
+
+
+# ------------------------------------------------------------------ releasing resources
+def _drop_quietly(
+    client: GigwaClient, module: str, token: str, timeout: float | None = None,
+    *, clear_token: bool = True,
+) -> str | None:
+    """dropTempCol (+ clearToken) for *token*; returns an error text instead of raising."""
+    try:
+        client.drop_temp_collection(module, token=token, clear_token=clear_token, timeout=timeout)
+        return None
+    except Exception as exc:  # noqa: BLE001 - releasing is best-effort; Gigwa expires it anyway
+        log.debug("dropTempCol failed for %s: %s", module, exc)
+        return str(exc) or type(exc).__name__
+
+
+def _export_still_running(subset: Subset) -> bool:
+    """Whether a non-waiting export started from this subset is still reading its
+    collection on the server (the Gigwa UI likewise never drops during an export)."""
+    if not subset.async_export or subset.release_client is None:
+        return False
+    try:
+        status = subset.release_client.export_progress(token=subset.token)
+    except Exception:  # noqa: BLE001 - unknown: assume it may still run
+        return True
+    return status is not None and not (status.complete or status.error or status.aborted)
+
+
+def _release_if_idle(subset: Subset, timeout: float | None = None, *, force: bool = False) -> str:
+    """Release a retired subset's server resources unless something still reads them.
+
+    ``force`` (shutdown) does not wait for tool calls or a background search -- they die
+    with the process anyway; a running background search is aborted on the server first.
+    A running non-waiting export is still never cut short.
+    """
+    with _REGISTRY.lock:
+        if subset.released:
+            return "released"
+        if not force and (subset.running or subset.users > 0):
+            return "deferred"
+    if _export_still_running(subset):  # network call: outside the lock
+        return "export-running"
+    with _REGISTRY.lock:
+        if subset.released:
+            return "released"
+        if not force and (subset.running or subset.users > 0):
+            return "deferred"
+        subset.released = True
+        job = subset.job
+        aborting = job is not None and job.is_alive()
+    if aborting and subset.token and subset.release_client is not None:
+        try:
+            subset.release_client.abort(subset.token, timeout=timeout)  # stop Gigwa filling it
+        except Exception:  # noqa: BLE001 - best-effort
+            pass
+        job.join(ABORT_GRACE)  # the search request returns once Gigwa has stopped writing
+    if not subset.token or subset.release_client is None:
+        return "released"  # tokenless (anonymous fallback): nothing of ours to drop
+    # After cutting a search short, keep the token: should Gigwa still write a last chunk
+    # after the drop (recreating the collection), the token's expiry cleanup drops it --
+    # a cleared token would leave it behind until Gigwa restarts (seen live).
+    error = _drop_quietly(
+        subset.release_client, subset.module, subset.token, timeout,
+        clear_token=not (aborting and job.is_alive()),
+    )
+    if error is None:
+        log.info("Released Gigwa temporary collection and token of subset '%s'", subset.name)
+        return "released"
+    return f"failed: {error}"
+
+
+def discard_subset(
+    client: GigwaClient, subset: Subset, *, timeout: float | None = None, force: bool = False
+) -> str:
+    """Forget a subset and release its temporary collection and token on the server.
+
+    Returns ``"released"``, ``"deferred"`` (a search or another tool call is still using
+    it: released as soon as that ends), ``"export-running"`` (a non-waiting export still
+    reads it: left to Gigwa's expiry cleanup) or ``"failed: <reason>"``.
+    """
+    with _REGISTRY.lock:
+        if _REGISTRY.subsets.get(subset.name) is subset:
+            del _REGISTRY.subsets[subset.name]
+        subset.retired = True
+        subset.release_client = subset.release_client or client
+    return _release_if_idle(subset, timeout, force=force)
+
+
+def discard_server_subsets(
+    client: GigwaClient, *, timeout: float | None = RELEASE_TIMEOUT, force: bool = False
+) -> dict[str, str]:
+    """Discard every subset built on *client*'s server (server switch, shutdown with
+    ``force``)."""
+    server = _server(client)
+    with _REGISTRY.lock:
+        mine = [s for s in _REGISTRY.subsets.values() if s.server == server]
+    return {s.name: discard_subset(client, s, timeout=timeout, force=force) for s in mine}
 
 
 def browse_subset(

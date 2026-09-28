@@ -1162,6 +1162,32 @@ class GigwaClient:
             )
         return data
 
+    def drop_temp_collection(
+        self, module: str, *, token: str, clear_token: bool = True,
+        timeout: "httpx.Timeout | float | None" = None,
+    ) -> bool:
+        """Drop *token*'s temporary variant collection in *module* and, with
+        ``clear_token``, invalidate the token itself.
+
+        ``DELETE /gigwa/dropTempCol/{module}?clearToken=true`` -- what the Gigwa web UI
+        calls when the user switches database or leaves the page. The collection dropped
+        is the one of the token *authenticating the request*, so this is always sent with
+        that token. Gigwa would otherwise only drop it when the token expires.
+        """
+        resp = self._check(
+            self.request(
+                "DELETE", f"/gigwa/dropTempCol/{module}",
+                params={"clearToken": "true"} if clear_token else None,
+                token=token, timeout=timeout,
+            ),
+            "dropTempCol",
+        )
+        try:
+            data = resp.json()
+        except ValueError:
+            return True
+        return bool(data.get("success", True)) if isinstance(data, dict) else True
+
     def callset_names(self, variant_set_db_id: str, *, samples: bool = False) -> list[str]:
         """List the individual (or, with ``samples``, sample) ids of a project, as used in
         group definitions -- ``POST /ga4gh/callsets/search``, whose results the Gigwa UI
