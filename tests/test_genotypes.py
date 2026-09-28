@@ -72,7 +72,7 @@ class SampleDbIdClient(FakeClient):
 
 
 def test_accession_name_extraction():
-    from gigwa_mcp.analysis.genotypes import _accession_name as a
+    from gigwa_mcp.identifiers import accession_name as a
 
     assert a("VS§ACC0050-1-clean", "VS§1§clean") == "ACC0050"
     assert a("MOD§foo-bar-2-run", "MOD§2§run") == "foo-bar"  # hyphenated accession kept

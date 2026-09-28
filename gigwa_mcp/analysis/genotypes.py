@@ -53,7 +53,6 @@ from .. import subsets
 from ..client import GigwaClient
 from ..exports import ExportSelection
 from ..errors import GigwaAPIError, GigwaError
-from ..identifiers import accession_name as _accession_name
 from ..identifiers import module_of, sample_name_map as _name_map
 from ..progress import notify
 
