@@ -102,8 +102,8 @@ never modify the data in Gigwa.
 | ------ | -------------- |
 | `list_variant_sets` | List every run with its exact BrAPI `variantSetDbId` (the id the analysis tools take) |
 | `list_sequences` | List the chromosomes/contigs of a variant set (valid `reference_name` values) |
-| `count_variants` | Count variants matching region / MAF / missing-data filters, server-side (no download) |
-| `search_variants` | Search variants server-side and write the matching list (`variant_search.csv`) |
+| `count_variants` | Count variants matching region / MAF / missing-data / heterozygosity filters (flat or per group), server-side (no download) |
+| `search_variants` | Search variants server-side and write the matching list (`variant_search.csv`); pages through a subset |
 | `list_export_formats` | List the export formats this build actually offers, with variant-type/ploidy limits |
 | `export_genotypes` | Export a variant set — or a filtered/selected subset — to a file; `wait=False` for long runs |
 | `get_export_progress` | Status of this session's running export (started with `wait=False`) |
@@ -112,6 +112,17 @@ never modify the data in Gigwa.
 | `get_germplasm_metadata` | Pull server-stored per-individual attributes (`germplasm_metadata.csv`) |
 | `list_metadata_values` | List individual-metadata field names and their distinct values |
 | `filter_individuals_by_metadata` | Select individuals by metadata field/value filters (feeds `export_genotypes`) |
+
+#### Groups & subsets (read-only, evaluated by Gigwa)
+
+| Tool | What it does |
+| ------ | -------------- |
+| `define_group` | Name a group of individuals or samples (explicit ids or metadata), validated against the project |
+| `define_variant_subset` | Have Gigwa filter variants on per-group MAF / missing data / heterozygosity and keep the result by name |
+| `get_subset_progress` | Gigwa's progress on a subset search started with `wait=False` (or its count once ready) |
+| `list_groups` | List the session's groups and subsets |
+| `drop_subset` | Discard a subset (or `"*"` for all) and free its temporary collection/token on Gigwa |
+| `selection_profile` | Gigwa-computed per-window MAF, missing data, heterozygosity, Fst, Tajima's D or density over a subset |
 
 #### QC & diversity (read-only)
 
@@ -127,7 +138,8 @@ never modify the data in Gigwa.
 | `diversity_fst` | Pairwise Weir & Cockerham Fst between groups |
 | `diversity_by_group` | Per-population He, Ho, Fis, MAF, % polymorphic + (rarefied) allelic richness |
 | `diversity_core_collection` | Greedy allele-coverage core: smallest accession set capturing the most diversity |
-| `diversity_structure` | Lightweight ancestry with PCA + K-means, pseudo-F suggests K (no ADMIXTURE binary) |
+| `diversity_structure` | Lightweight ancestry with PCA + K-means, pseudo-F suggests K (pure Python, all platforms) |
+| `diversity_admixture` | Model-based ancestry (Q matrix) via the real ADMIXTURE binary, CV-picked K, or supervised against reference groups (Linux/macOS) |
 | `diversity_tree` | UPGMA dendrogram of accessions from IBS distance, written as Newick (`tree.nwk`) |
 
 Every QC & diversity tool also accepts `region` (`"chrom"` or `"chrom:start-end"`, 1-based;
@@ -481,6 +493,8 @@ More example prompts:
 | "Compare diversity (He/Ho/allelic richness) across my populations." | `diversity_by_group` |
 | "Pick a core collection of ~10% that captures the most diversity." | `diversity_core_collection` |
 | "How many genetic clusters are in this collection?" | `diversity_structure` |
+| "Run ADMIXTURE / give me ancestry proportions per accession." | `diversity_admixture` |
+| "Estimate the admixed accessions' ancestry using the other groups as reference populations." | `diversity_admixture` with `reference_groups_json` |
 | "Build a UPGMA tree of the accessions." | `diversity_tree` |
 
 ## Tool reference
@@ -511,16 +525,38 @@ args `max_markers` / `method` (`"vcf"` | `"allelematrix"`), and `region`
 | ------ | --------------- | ------------------ |
 | `list_variant_sets` | (none) | every run's exact `variantSetDbId` + counts |
 | `list_sequences` | `variant_set_db_id` | chromosomes/contigs (valid `reference_name`s) |
-| `count_variants` | `reference_name?`, `start?`, `end?`, `min_maf?`, `max_maf?`, `max_missing_data?` | server-side match count (no download) |
-| `search_variants` | same filters as `count_variants`, `max_variants=100000` | `variant_search.csv` (id/chrom/pos/ref/alt) |
+| `count_variants` | `reference_name?`, `start?`, `end?`, `min_maf?`, `max_maf?`, `max_missing_data?`, `min_het?`, `max_het?`, `group_filters_json?`, `subset?` | server-side match count (no download) |
+| `search_variants` | same filters as `count_variants`, `page=0`, `max_variants=100000` | `variant_search.csv` (id/chrom/pos/ref/alt); with `subset`, pages Gigwa's stored result |
 | `list_export_formats` | (none) | the instance's export handlers + type/ploidy limits |
-| `export_genotypes` | `output_path`, `format="VCF"`, plus `region?`, `min_maf?`, `individuals?`, `metadata_fields?`, `wait=True` | writes the export file; `wait=False` returns a URL or saves an immediately returned file |
+| `export_genotypes` | `output_path`, `format="VCF"`, plus `region?`, `min_maf?`, `group_filters_json?`, `subset?`, `individuals?`, `metadata_fields?`, `wait=True` | writes the export file; `wait=False` returns a URL or saves an immediately returned file |
 | `get_export_progress` | (none) | status of this session's export |
 | `fetch_export_file` | `download_url`, `output_path` | writes the completed export |
 | `search_callsets` | `variant_set_db_id` | `sample_metadata.csv` (per-sample attributes) |
 | `get_germplasm_metadata` | `variant_set_db_id` | `germplasm_metadata.csv` (join on `sample_name`) |
 | `list_metadata_values` | `variant_set_db_id` | metadata fields + distinct values |
 | `filter_individuals_by_metadata` | `variant_set_db_id`, `filters_json` | matching individual identifiers |
+
+#### Groups & subsets
+
+| Tool | Key arguments | Returns / writes |
+| ------ | --------------- | ------------------ |
+| `define_group` | `variant_set_db_id`, `name`, `members?` **or** `metadata_filters_json?`, `entity="individuals"` | group size + ids not found in the project |
+| `define_variant_subset` | `variant_set_db_id`, `name?`, `region?`, `selected_variant_types?`, `group_filters_json?` (or flat `min_maf?`, `max_missing_data?`, `min_het?`, `max_het?`), `wait=True` | variant count (Gigwa's progress relayed meanwhile); `wait=False` returns at once — follow with `get_subset_progress`; the subset is reusable as `subset=` |
+| `get_subset_progress` | `subset` | still filtering (Gigwa's step + %), failed, or ready with its count |
+| `list_groups` | (none) | groups and subsets of the session |
+| `drop_subset` | `subset` (or `"*"`) | frees the subset's temporary collection + token on the server |
+| `selection_profile` | `subset`, `statistic`, `sequence`, `start?`, `end?`, `intervals=100`, `groups?` | `profile_<statistic>_<sequence>.csv` + summary |
+
+`group_filters_json` is a list with one entry per group, e.g.
+`[{"group": "G1", "min_maf": 0.05, "max_missing": 0.1, "max_het": 0.2}, {"group": "G2", "max_missing": 0.2}]`
+(0-1 fractions; Gigwa applies them inclusively and requires all of them). Gigwa keeps a
+filtered search result per token, so each subset gets its own token; it is browsed,
+exported and charted without re-filtering, and rebuilt automatically if it expires.
+Those server-side resources are released (`dropTempCol` + `clearToken`, as the Gigwa UI
+does) when a subset is redefined or dropped, when `gigwa_connect` moves to another
+server, and when the MCP server shuts down — never while a search, tool call or
+non-waiting export still reads them. Every
+QC/diversity tool also takes `subset=` to analyse only that subset's variants and members.
 
 **QC & diversity** (output files listed in [Output files](#output-files))
 
@@ -537,6 +573,7 @@ args `max_markers` / `method` (`"vcf"` | `"allelematrix"`), and `region`
 | `diversity_by_group` | `groups_json?` / `metadata_tsv`+`group_column` | per-group He/Ho/Fis/MAF/%poly/allelic richness |
 | `diversity_core_collection` | `size?` **or** `fraction=0.1` | core set + % of diversity captured |
 | `diversity_structure` | `k_min=2`, `k_max=10` | suggested K (pseudo-F) + per-K table; warns on degenerate clustering |
+| `diversity_admixture` | `k_min=2`, `k_max=6`, `seed=1`, `threads?`, `reference_groups_json?` | Q matrix at CV-best K + CV error per K; with `reference_groups_json`, one `--supervised` run at K = number of groups (Linux/macOS only) |
 | `diversity_tree` | `max_markers=5000` | UPGMA Newick (`tree.nwk`) |
 
 #### Audit
@@ -559,6 +596,7 @@ support them, and in directories like glama.ai).
 | `qc_triage` | `variant_set_db_id` | full QC suite + a go/no-go verdict for downstream analysis |
 | `explore_instance` | (none) | server info → list content/variant sets → instance-wide audit |
 | `region_scan` | `variant_set_db_id`, `region` | sequences → count/search variants → region-filtered diversity |
+| `group_filtering` | `variant_set_db_id`, `request` | groups → per-group MAF/missing/het subset in Gigwa → browse/profile/export/reuse |
 
 **Resources** — read-only endpoints a client can fetch:
 
@@ -571,7 +609,7 @@ support them, and in directories like glama.ai).
 
 The repo also ships **Agent Skills** (the open [`SKILL.md` standard](https://github.com/agentskills/agentskills))
 under [`skills/`](skills/) — task-oriented guides that teach an agent how to drive the tools
-above. They mirror the five workflow prompts and are discoverable on the
+above. They mirror the six workflow prompts and are discoverable on the
 [LobeHub Skills Marketplace](https://lobehub.com/skills) and other `SKILL.md` directories.
 The capability stays in the MCP server; the skills just sequence and explain the tools.
 
@@ -582,6 +620,7 @@ The capability stays in the MCP server; the skills just sequence and explain the
 | `gigwa-qc-triage` | `qc_triage` | full QC suite on an imported run → go/no-go verdict |
 | `gigwa-explore-instance` | `explore_instance` | no-arg instance survey + health check |
 | `gigwa-region-scan` | `region_scan` | variant density + local diversity within one region |
+| `gigwa-group-filtering` | `group_filtering` | groups of individuals/samples → Gigwa-side per-group MAF/missing/het filtering → reusable subset |
 
 See [`skills/README.md`](skills/README.md) for the layout, prerequisites, and how to validate
 or install them.
@@ -633,6 +672,9 @@ Each analysis writes one or more CSVs (Newick for the tree) under
 | `diversity_by_group.csv` | `diversity_by_group` | per-group He/Ho/Fis/MAF/%poly/allelic richness |
 | `core_collection.csv` | `diversity_core_collection` | rank, accession, cumulative allele coverage |
 | `structure_clusters.csv` | `diversity_structure` | per-sample cluster + PC coords |
+| `admixture_Q_K<k>.csv` | `diversity_admixture` | per-sample ancestry fractions at the CV-best K |
+| `admixture_cv.csv` | `diversity_admixture` | cross-validation error / log-likelihood per K evaluated |
+| `admixture_supervised_Q.csv` | `diversity_admixture` (supervised) | per-sample ancestry fractions, one column per reference group, plus each sample's `reference_group` (blank for targets) |
 | `tree.nwk` | `diversity_tree` | UPGMA tree (Newick) |
 | `import_quality_scan.csv` | `audit_import_quality` | one row per run: status + diagnostics + reasons |
 | `variant_search.csv` | `search_variants` | matching variants (id, chrom, pos, ref, alt) |
@@ -724,8 +766,13 @@ Phylo.draw(Phylo.read("gigwa_results/MYDB/tree.nwk", "newick"))
 - **`diversity_structure` is a lightweight heuristic.** It is PCA + K-means with a
   pseudo-F (Calinski-Harabasz) K suggestion; there is no true admixture model. On weakly
   or continuously structured data pseudo-F tends toward `k_max`; the per-K table is the
-  real output and the tool warns when clustering is degenerate. For formal ancestry use a
-  dedicated tool (ADMIXTURE / sNMF) on an exported VCF.
+  real output and the tool warns when clustering is degenerate. `diversity_admixture` runs
+  the real model-based ADMIXTURE tool instead, when that stronger result is needed.
+- **`diversity_admixture` needs Linux or macOS.** It fetches the official ADMIXTURE
+  binary (statically linked, no installer) into `~/.cache/gigwa-mcp/admixture` on first
+  use; the author publishes no native Windows build, so on Windows run it via WSL, Linux,
+  or Docker. ADMIXTURE is free for academic/non-profit use — commercial use requires a
+  license from the author (see https://dalexander.github.io/admixture).
 - **Diploid-biallelic assumptions** in places (IBS dosage 0/1/2, collapsed-token decode).
 - **Grouping uses a metadata TSV, not server attributes.** Some Gigwa builds do not expose
   BrAPI germplasm/sample/attribute endpoints, so `diversity_fst` / `diversity_by_group`

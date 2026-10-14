@@ -7,7 +7,8 @@ import pytest
 
 from gigwa_mcp.client import GigwaClient
 from gigwa_mcp.config import GigwaConfig
-from gigwa_mcp.errors import GigwaImportError
+from gigwa_mcp.errors import GigwaAPIError, GigwaExportError, GigwaImportError
+from gigwa_mcp.exports import BULK_TRANSFER_TIMEOUT, DOWNLOAD_STALL_SECONDS
 
 
 def make_client(handler) -> GigwaClient:
@@ -141,3 +142,214 @@ def test_wait_for_completion_raises_on_error():
     client = make_client(handler)
     with pytest.raises(GigwaImportError):
         client.wait_for_completion("tok", poll_interval=0)
+
+
+def test_export_variantset_vcf_raises_promptly_on_reported_error():
+    """A failure surfaces in the progress JSON's "error" field, not as a non-202/200
+    HTTP status on the main export endpoint -- the main endpoint just keeps returning
+    202 forever. Left unread, this would silently poll until the *outer* timeout
+    instead of surfacing the real cause -- assert it's read and raised immediately."""
+    calls = {"export": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/generateToken"):
+            return httpx.Response(201, json={"token": "t"})
+        if request.url.path.endswith("/export/vcf"):
+            calls["export"] += 1
+            return httpx.Response(202, text="Initiating export...")
+        if request.url.path.endswith("/gigwa/progress"):
+            return httpx.Response(
+                200, json={"error": "Out of memory during export", "complete": False}
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler)
+    with pytest.raises(GigwaAPIError, match="Out of memory during export"):
+        client.export_variantset_vcf("VS§1§run", "/tmp/should-not-be-written.vcf", poll_interval=0, timeout=60)
+    # Raised on the first poll -- proves it didn't fall through to the outer timeout.
+    assert calls["export"] == 1
+
+
+def test_export_variantset_vcf_reads_body_with_bulk_transfer_timeout(tmp_path):
+    """The GET that reads the completed export's (potentially hundreds-of-MB) body must
+    use the long bulk-transfer timeout, not GigwaConfig's ordinary ~120s API timeout --
+    confirmed live: a large export failed against the short one while a same-sized,
+    percentage-tracked request (small JSON polls only) completed cleanly."""
+    seen_timeout = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/generateToken"):
+            return httpx.Response(201, json={"token": "t"})
+        if request.url.path.endswith("/export/vcf"):
+            seen_timeout["value"] = request.extensions.get("timeout")
+            return httpx.Response(200, content=b"##fileformat=VCFv4.1\n" + b"x" * 100)
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = make_client(handler)
+    client.export_variantset_vcf("VS§1§run", tmp_path / "out.vcf", poll_interval=0, timeout=60)
+    assert seen_timeout["value"] == {
+        "connect": BULK_TRANSFER_TIMEOUT.connect,
+        "read": BULK_TRANSFER_TIMEOUT.read,
+        "write": BULK_TRANSFER_TIMEOUT.write,
+        "pool": BULK_TRANSFER_TIMEOUT.pool,
+    }
+
+
+def test_export_download_uses_long_total_but_short_stall_timeout(tmp_path):
+    """ExportManager.download() -- the raw file GET behind fetch_export_file /
+    export_selection -- keeps the long bulk allowance overall, but a short per-read
+    (inactivity) timeout so a dead connection fails fast instead of hanging 30 min."""
+    seen_timeout = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/generateToken"):
+            return httpx.Response(201, json={"token": "t"})
+        seen_timeout["value"] = request.extensions.get("timeout")
+        return httpx.Response(200, content=b"x" * 100)
+
+    client = make_client(handler)
+    client.exports.download("/download/it", tmp_path / "out.vcf")
+    assert seen_timeout["value"] == {
+        "connect": BULK_TRANSFER_TIMEOUT.connect,
+        "read": DOWNLOAD_STALL_SECONDS,
+        "write": BULK_TRANSFER_TIMEOUT.write,
+        "pool": BULK_TRANSFER_TIMEOUT.pool,
+    }
+
+
+@pytest.mark.parametrize(
+    "exc", [httpx.ReadTimeout("timed out"), httpx.RemoteProtocolError("peer closed connection")]
+)
+def test_export_download_reports_a_stalled_or_dropped_connection_clearly(tmp_path, exc):
+    """A connection lost mid-download (e.g. a network switch) must surface as an
+    explicit, retryable GigwaExportError -- not a silent hang or a bare httpx error --
+    and leave no partial file behind."""
+
+    class Dying(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"x" * 1000
+            raise exc
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/generateToken"):
+            return httpx.Response(201, json={"token": "t"})
+        return httpx.Response(200, stream=Dying())
+
+    client = make_client(handler)
+    with pytest.raises(GigwaExportError, match="fetch_export_file"):
+        client.exports.download("/download/it", tmp_path / "out.vcf")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_export_download_reports_progress_during_transfer(tmp_path, monkeypatch):
+    """A long download must not go MCP-protocol-silent -- confirmed live: a transfer
+    that was still genuinely receiving bytes (just slowly) got killed by the harness's
+    own silence watchdog, hours past every timeout in this client, because download()
+    never called notify() during the transfer itself. Assert it now does, repeatedly,
+    with real growing byte-based percentages -- not just once at the end."""
+    from gigwa_mcp import progress as progress_mod
+
+    total_size = 12_000_000  # spans several ~5MB notify thresholds
+    body = b"x" * total_size
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/generateToken"):
+            return httpx.Response(201, json={"token": "t"})
+        return httpx.Response(200, content=body, headers={"content-length": str(total_size)})
+
+    client = make_client(handler)
+
+    emitted: list[tuple] = []
+    monkeypatch.setattr(progress_mod.from_thread, "run", lambda fn, *args: emitted.append(args))
+    token = progress_mod.set_reporter(lambda *a: None)
+    try:
+        result = client.exports.download("/download/it", tmp_path / "out.bin")
+    finally:
+        progress_mod.reset_reporter(token)
+
+    assert result.stat().st_size == total_size
+    assert len(emitted) >= 2, "expected multiple progress pings across a 12MB transfer"
+    pcts = [args[0] for args in emitted]
+    assert pcts == sorted(pcts)  # monotonically increasing
+    assert pcts[-1] == 100.0  # always ends clean, even though the threshold-based
+    # mid-transfer pings alone would generally land short of it
+
+
+def test_export_selection_uses_a_dedicated_token_not_the_shared_session_one(tmp_path):
+    """Gigwa tracks one "current export" per token, not per session -- reusing the
+    client's shared session token for an export risks colliding with *any* other
+    export sharing that token, whether a deliberate concurrent run or just a retry
+    issued before a failed attempt's server-side thread actually died. Each export
+    must mint and use its own token, and poll progress under that same token."""
+    tokens_issued: list[str] = []
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/generateToken"):
+            tokens_issued.append(f"tok{len(tokens_issued)}")
+            return httpx.Response(201, json={"token": tokens_issued[-1]})
+        if request.url.path.endswith("/gigwa/exportData"):
+            seen["export_post_auth"] = request.headers.get("authorization")
+            return httpx.Response(200, text="/download/it")  # queued: a download URL
+        if request.url.path.endswith("/gigwa/progress"):
+            seen["progress_auth"] = request.headers.get("authorization")
+            return httpx.Response(200, json={"complete": True})
+        return httpx.Response(200, content=b"vcf-bytes")  # the actual file download
+
+    client = make_client(handler)
+    client._generate_token()  # establish the shared session token first, like normal
+    # use -- so we can prove the export's token is a genuinely different one, not just
+    # "a token" in the abstract.
+    shared_token = client._token
+
+    client.export_selection("VS§1§run", tmp_path / "out.vcf", poll_interval=0)
+
+    export_token = seen["export_post_auth"].removeprefix("Bearer ")
+    assert export_token != shared_token  # dedicated, not the shared session token
+    # progress was polled under that *same* dedicated token, not the shared one either
+    assert seen["progress_auth"] == f"Bearer export_{export_token}"
+
+
+def test_export_selection_gives_two_calls_two_different_tokens(tmp_path):
+    """Two exports -- concurrent, or merely overlapping (a retry started before the
+    previous attempt's server-side thread died) -- must never share a token, or Gigwa's
+    per-token "current export" tracking conflates them."""
+    tokens_issued: list[str] = []
+    export_auths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/generateToken"):
+            tokens_issued.append(f"tok{len(tokens_issued)}")
+            return httpx.Response(201, json={"token": tokens_issued[-1]})
+        if request.url.path.endswith("/gigwa/exportData"):
+            export_auths.append(request.headers.get("authorization"))
+            return httpx.Response(200, text="/download/it")
+        if request.url.path.endswith("/gigwa/progress"):
+            return httpx.Response(200, json={"complete": True})
+        return httpx.Response(200, content=b"vcf-bytes")
+
+    client = make_client(handler)
+    client.export_selection("VS§1§run", tmp_path / "a.vcf", poll_interval=0)
+    client.export_selection("VS§1§run", tmp_path / "b.vcf", poll_interval=0)
+
+    assert len(export_auths) == 2
+    assert export_auths[0] != export_auths[1]
+
+
+def test_export_selection_anonymous_client_sends_no_export_token(tmp_path):
+    """Anonymous access has no credentials to mint a dedicated token with -- must not
+    try to authenticate the export POST at all, same as every other anonymous request."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "authorization" not in {k.lower() for k in request.headers}
+        if request.url.path.endswith("/gigwa/exportData"):
+            return httpx.Response(200, text="/download/it")
+        if request.url.path.endswith("/gigwa/progress"):
+            return httpx.Response(200, json={"complete": True})
+        return httpx.Response(200, content=b"vcf-bytes")
+
+    cfg = GigwaConfig(base_url="http://test/gigwa")  # no username/password -> anonymous
+    client = GigwaClient(cfg)
+    client._http = httpx.Client(transport=httpx.MockTransport(handler))
+    assert client.anonymous
+    client.export_selection("VS§1§run", tmp_path / "out.vcf", poll_interval=0)

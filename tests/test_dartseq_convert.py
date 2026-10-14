@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from gigwa_mcp.importers import call_snp_genotypes, convert_dart_to_vcf
 

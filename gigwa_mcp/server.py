@@ -18,11 +18,14 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import anyio
+import httpx
 from starlette.types import ASGIApp, Receive, Scope, Send
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from .client import GigwaClient
 from .config import GigwaConfig
+from .errors import GigwaError
 from . import __version__
 from .progress import reset_reporter, set_reporter
 
@@ -145,6 +148,20 @@ def get_client() -> GigwaClient:
     return _client
 
 
+def release_subsets() -> None:
+    """Shutdown hook: release the Gigwa temporary collections and tokens of every
+    subset of this session (the equivalent of the Gigwa UI dropping its collection when
+    the page is closed). Best-effort and time-bounded; Gigwa expires them anyway."""
+    if _client is None:
+        return
+    from . import subsets
+
+    try:
+        subsets.discard_server_subsets(_client, force=True)
+    except Exception:  # noqa: BLE001 - never block or fail a shutdown
+        pass
+
+
 def set_client(client: GigwaClient | None) -> GigwaClient | None:
     """Install *client* as the process-wide client and return the previous one, if any.
 
@@ -184,6 +201,17 @@ def progress_tool(**tool_kwargs: Any) -> Callable[[Callable[..., Any]], Callable
             token = set_reporter(ctx.report_progress if ctx is not None else None)
             try:
                 return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+            # The SDK reports anything but a ToolError as a crash and hides its text: the
+            # model sees only "Error executing tool <name>" -- confirmed live, a
+            # diversity_admixture whose export download died gave no hint why. Gigwa and
+            # network failures are anticipated, so hand their message through.
+            except GigwaError as exc:
+                raise ToolError(str(exc)) from exc
+            except httpx.TransportError as exc:
+                raise ToolError(
+                    f"Connection to Gigwa failed ({type(exc).__name__}: {exc or 'no detail'}). "
+                    f"Check the network and retry."
+                ) from exc
             finally:
                 reset_reporter(token)
 
@@ -316,6 +344,25 @@ TOOL_CATALOG: dict[str, ToolInfo] = {
     "search_variants": ToolInfo(
         "Variant search", "Search variants server-side and write the matching list to CSV.",
         _SEARCH, _T_GENVAR),
+    # -- Groups & subsets --
+    "define_group": ToolInfo(
+        "Groups & subsets", "Name a group of individuals/samples (explicit ids or metadata).",
+        _HANDLE, _T_GENVAR),
+    "drop_subset": ToolInfo(
+        "Groups & subsets", "Discard a subset and free its temporary collection/token on Gigwa.",
+        _HANDLE, _T_DATA),
+    "get_subset_progress": ToolInfo(
+        "Groups & subsets", "Report the status of a subset search started with wait=False.",
+        _HANDLE, _T_DATA),
+    "list_groups": ToolInfo(
+        "Groups & subsets", "List the session's groups and variant subsets.",
+        _RETRIEVE, _T_DATA),
+    "define_variant_subset": ToolInfo(
+        "Groups & subsets", "Filter variants in Gigwa on per-group MAF/missingness/heterozygosity and keep the result.",
+        _VARIANT_FILTER, _T_GENVAR),
+    "selection_profile": ToolInfo(
+        "Groups & subsets", "Gigwa-computed per-interval MAF/missing/het/Fst/Tajima's D/density over a subset.",
+        _STATS, _T_POPGEN),
     # -- Export --
     "list_export_formats": ToolInfo(
         "Export", "List export formats this instance supports, with type/ploidy compatibility.",
@@ -364,6 +411,9 @@ TOOL_CATALOG: dict[str, ToolInfo] = {
     "diversity_structure": ToolInfo(
         "Diversity & structure", "Population-structure clustering (PCA + K-means).",
         _CLUSTER, _T_POPGEN),
+    "diversity_admixture": ToolInfo(
+        "Diversity & structure", "Model-based ancestry (Q matrix) via the real ADMIXTURE binary.",
+        _CLUSTER, _T_POPGEN),
     "diversity_tree": ToolInfo(
         "Diversity & structure", "UPGMA dendrogram of accessions from IBS distance.",
         _PHYLO, _T_PHYLO),
@@ -377,7 +427,7 @@ TOOL_CATALOG: dict[str, ToolInfo] = {
 # Registering the tool modules attaches their @mcp.tool() functions to `mcp`.
 from .tools import connection, genotype, metadata  # noqa: E402,F401
 from .tools import qc, diversity, audit  # noqa: E402,F401
-from .tools import search  # noqa: E402,F401
+from .tools import search, groups  # noqa: E402,F401
 
 
 def _apply_catalog_meta() -> None:
@@ -423,7 +473,6 @@ _PARAM_DESCRIPTIONS: dict[str, str] = {
     "ploidy": "Sample ploidy (default 2).",
     "skip_monomorphic": "Drop non-variant (monomorphic) markers during import.",
     "clear_project_data": "Replace any existing data in the project before importing.",
-    "wait": "Block until the job finishes (True, default) or return immediately once it's kicked off (False) -- an import returns a progress token to poll with get_import_progress, an export returns a download URL to poll with get_export_progress and retrieve with fetch_export_file.",
     "snp_xlsx": "Path to a DArTseq SNP xlsx report.",
     "silico_xlsx": "Path to a Silico-DArT xlsx report.",
     "vcf_path": "Path to the VCF file (.vcf or .vcf.gz) to import.",
@@ -451,6 +500,22 @@ _PARAM_DESCRIPTIONS: dict[str, str] = {
     "keep_on_server": "Also leave a copy of the export in the user's Gigwa temp-output area after downloading it here.",
     "filters_json": "JSON object mapping each metadata field name to a list of acceptable values, e.g. {\"GroupK4\": [\"cA\"]} (see list_metadata_values for field/value names). Multiple fields AND together; multiple values for one field OR together.",
     "download_url": "Download URL returned by export_genotypes(..., wait=False), once get_export_progress reports the export complete.",
+    "export_token": "The export's own token, from export_genotypes(..., wait=False)'s reply -- pins the check to that specific export. Omit only when at most one export is in flight at a time; Gigwa tracks one \"current export\" per token, so with no argument this falls back to the session's shared token and could report a different export's status.",
+    "min_het": "Minimum per-variant heterozygosity rate (0-1): share of heterozygous calls among non-missing genotypes, evaluated by Gigwa.",
+    "max_het": "Maximum per-variant heterozygosity rate (0-1), evaluated by Gigwa.",
+    "group_filters_json": "JSON list of per-group filters evaluated by Gigwa, e.g. [{\"group\": \"G1\", \"min_maf\": 0.05, \"max_missing\": 0.1, \"max_het\": 0.2}]. Each entry names a define_group group (or lists 'members' inline, or neither = everyone) with any of min_maf, max_maf (0-0.5), min_missing, max_missing, min_het, max_het (0-1), and optionally discriminate_with: the name of another group of the list, keeping only variants whose single dominant genotype differs between the two groups (Gigwa's 'Discriminate with'). Bounds are inclusive and all criteria of all groups must hold.",
+    "subset": "Name of a variant subset from define_variant_subset: reuses the result Gigwa already holds for it instead of re-filtering.",
+    "wait": "Block until the job finishes (True, default) or return immediately once it's kicked off (False) -- an import returns a progress token to poll with get_import_progress, an export returns a download URL to poll with get_export_progress and retrieve with fetch_export_file, and a variant subset is followed with get_subset_progress (tools given the subset wait for it).",
+    "page": "Page to start reading the subset at (0-based; pages of min(1000, max_variants) variants). The reply names the next page.",
+    "name": "Name to give it (reusing a name replaces the previous definition).",
+    "members": "Individual ids (or sample ids with entity='samples') of the project, as listed by Gigwa.",
+    "metadata_filters_json": "JSON object {field: [values]} selecting members from stored metadata (see list_metadata_values); fields AND together, values OR together. With entity='samples', prefix parent-individual fields with 'ind.'.",
+    "entity": "What group members are: 'individuals' (default) or 'samples' (Gigwa's 'work with samples' mode).",
+    "statistic": "Per-interval statistic Gigwa computes: maf, missing, heterozygosity, fst (needs 2+ groups), tajima_d or density.",
+    "sequence": "Chromosome/contig to profile (see list_sequences).",
+    "intervals": "Number of windows the sequence (or start-end range) is split into, 50-5000.",
+    "groups": "Names of the subset's groups whose genotypes the statistic is computed on; omit for all of them.",
+    "variant_type": "Restrict the profile to one variant type (e.g. SNP); omit for all.",
     "min_sample_call_rate": "Flag samples with call rate below this (0-1).",
     "min_marker_call_rate": "Flag markers with call rate below this (0-1).",
     "outlier_sd": "Flag points more than this many standard deviations from the mean.",
@@ -460,6 +525,7 @@ _PARAM_DESCRIPTIONS: dict[str, str] = {
     "n_components": "Number of principal components to compute.",
     "top_pairs": "How many most-related sample pairs to report.",
     "groups_json": "JSON object mapping each group name to a list of accession names/ids.",
+    "reference_groups_json": "Supervised ADMIXTURE: JSON object mapping each reference population name to its member individuals, e.g. {\"XI\": [...], \"GJ\": [...]}. Runs once with K = number of groups (k_min/k_max ignored); every other analysed sample is a target. Members are auto-added to individuals.",
     "metadata_tsv": "Path to a metadata TSV (import_metadata format) used to define groups.",
     "group_column": "Column in the metadata TSV holding the group/population label.",
     "id_column": "Column in the metadata TSV holding the individual/accession id (default 'individual').",
@@ -470,6 +536,8 @@ _PARAM_DESCRIPTIONS: dict[str, str] = {
     "het_threshold": "Mean observed-heterozygosity above which a run is flagged BROKEN (mis-called heterozygotes).",
     "complete_call_rate": "Call-rate above which a run is flagged as suspiciously complete (no missing data).",
     "monomorphic_threshold": "Monomorphic-marker fraction above which a run is flagged for low informativeness.",
+    "seed": "Random seed for ADMIXTURE's initialization (reproducibility).",
+    "threads": "Number of CPU threads ADMIXTURE should use; omit to let it choose.",
 }
 
 

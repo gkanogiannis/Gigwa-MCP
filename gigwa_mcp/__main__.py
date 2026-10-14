@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import sys
 
 from mcp.server.transport_security import TransportSecuritySettings
 
-from .server import mcp
+from .server import mcp, release_subsets
 
 
 def main() -> None:
@@ -45,10 +46,23 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.port is not None:
-        run_http_server(args.port)
-    else:
-        mcp.run(transport="stdio")
+    # A client stopping the server with SIGTERM would kill it without running the cleanup
+    # below, and turning the signal into SystemExit does not stop the stdio loop (it is
+    # blocked reading stdin). So: clean up, then die of SIGTERM as before.
+    if signal.getsignal(signal.SIGTERM) is signal.SIG_DFL:
+        def _terminate(signum: int, _frame: object) -> None:
+            release_subsets()
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+
+        signal.signal(signal.SIGTERM, _terminate)
+    try:
+        if args.port is not None:
+            run_http_server(args.port)
+        else:
+            mcp.run(transport="stdio")
+    finally:
+        release_subsets()  # free this session's Gigwa temporary collections and tokens
 
 
 def _normalize_allowed_hosts(values: list[str]) -> list[str]:

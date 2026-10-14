@@ -109,7 +109,7 @@ def test_diversity_by_group(monkeypatch, tmp_path):
     gm = _two_cluster_gm()
     _patch_loader(monkeypatch, gm)
     groups = '{"A": ["acc0","acc1","acc2","acc3"], "B": ["acc4","acc5","acc6","acc7"]}'
-    out = _fn(diversity.diversity_by_group)(
+    _fn(diversity.diversity_by_group)(
         "VS§1§run", groups_json=groups, output_dir=str(tmp_path)
     )
     df = __import__("pandas").read_csv(tmp_path / "diversity_by_group.csv")

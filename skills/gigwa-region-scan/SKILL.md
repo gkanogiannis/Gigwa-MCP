@@ -61,6 +61,12 @@ start/end) or `region="chr1"`.
 5. **Report** variant density (per bp / per window), common-vs-rare split, and local
    diversity/call-rate.
 
+### Per-group filters and per-window profiles
+
+For thresholds on a group of individuals rather than the whole population, or per-window
+MAF / missing data / heterozygosity / Fst / Tajima's D computed by Gigwa over the window,
+build a subset with `region=` via **gigwa-group-filtering** and use `selection_profile`.
+
 ## Interpreting results
 
 - **Density** — variants per window vs the dataset average flags hyper-variable or

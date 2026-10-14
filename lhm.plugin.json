@@ -48,7 +48,12 @@
       "name": "Gigwa Local Region Scanner",
       "description": "Investigates genomic variant density and isolates micro-diversity patterns inside specific windows.",
       "src": "skills/gigwa-region-scan/SKILL.md"
+    },
+    {
+      "id": "gigwa-group-filtering",
+      "name": "Gigwa Group Filtering",
+      "description": "Translates requests about groups of individuals/samples into Gigwa's server-side per-group MAF, missing-data and heterozygosity filtering, then reuses the resulting subset.",
+      "src": "skills/gigwa-group-filtering/SKILL.md"
     }
   ]
 }
-

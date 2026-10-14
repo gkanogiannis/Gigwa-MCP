@@ -106,3 +106,20 @@ def region_scan(variant_set_db_id: str, region: str) -> str:
         f"4. diversity_summary and qc_call_rate with region='{region}' — characterise just that window.\n"
         "Report variant density, common vs rare, and diversity in the region."
     )
+
+
+@mcp.prompt()
+def group_filtering(variant_set_db_id: str, request: str) -> str:
+    """Filter variants on per-group MAF / missing data / heterozygosity, evaluated by Gigwa."""
+    return (
+        f"In variant set '{variant_set_db_id}', fulfil this request with Gigwa's own group-level "
+        f"filtering: {request}\n"
+        "1. define_group — one group per set of individuals/samples named (explicit ids, or "
+        "metadata_filters_json after list_metadata_values); report ids not found.\n"
+        "2. Translate thresholds to 0-1 fractions (MAF > 5% -> min_maf 0.05, < 10% missing -> "
+        "max_missing 0.1, heterozygosity < 20% -> max_het 0.2); bounds are inclusive, all criteria AND.\n"
+        "3. define_variant_subset with group_filters_json (one entry per group) — Gigwa runs the filter.\n"
+        "4. search_variants(subset=...) to list/page the variants; selection_profile for per-window "
+        "MAF/missing/het/Fst/Tajima's D; export_genotypes or QC/diversity tools with subset=... for the next step.\n"
+        "Never filter locally (qc_maf_filter only reports). State the variant count and the exact filters applied."
+    )

@@ -14,7 +14,7 @@ client that did not send a ``progressToken``), so helpers can call it unconditio
 from __future__ import annotations
 
 import contextvars
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Protocol
 
 from anyio import from_thread
 

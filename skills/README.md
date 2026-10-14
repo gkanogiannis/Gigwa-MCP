@@ -3,7 +3,7 @@
 Task-oriented **Agent Skills** for the [`gigwa-mcp`](https://github.com/gkanogiannis/Gigwa-MCP)
 MCP server. Each skill teaches an agent how to drive the server's tools to accomplish a
 common Gigwa workflow — import + QC, a diversity report, a QC verdict, an instance overview,
-or a region scan.
+a region scan, or group-level variant filtering.
 
 ## What Agent Skills are
 
@@ -25,13 +25,14 @@ discoverable on the [LobeHub Skills Marketplace](https://lobehub.com/skills) and
 | [`gigwa-qc-triage`](gigwa-qc-triage/SKILL.md) | `qc_triage` | Full QC suite on an already-imported run → go/no-go verdict. | `qc_call_rate`, `qc_heterozygosity`, `qc_duplicate_accessions`, `qc_maf_filter`, `audit_import_quality` |
 | [`gigwa-explore-instance`](gigwa-explore-instance/SKILL.md) | `explore_instance` | No-arg instance survey + health check; enumerates runs with their variantSetDbIds. | `gigwa_server_info`, `list_content`, `list_variant_sets`, `audit_import_quality` |
 | [`gigwa-region-scan`](gigwa-region-scan/SKILL.md) | `region_scan` | Variant density + local diversity within one chromosome/window. | `list_sequences`, `count_variants`, `search_variants`, `diversity_summary`, `qc_call_rate` |
+| [`gigwa-group-filtering`](gigwa-group-filtering/SKILL.md) | `group_filtering` | Groups of individuals/samples → Gigwa-side per-group MAF / missing-data / heterozygosity filtering → reusable subset (browse, profile, export, analyse). | `define_group`, `define_variant_subset`, `search_variants`, `selection_profile`, `export_genotypes` |
 
 ## Prerequisite
 
 These skills assume the **gigwa-mcp MCP server is connected** to your agent (see the main
 README's [Installation](../README.md#installation) and
 [Configuration](../README.md#configuration)). Read-only skills (explore, QC triage,
-diversity, region scan) work **anonymously** against the configured `GIGWA_URL` (defaults to
+diversity, region scan, group filtering) work **anonymously** against the configured `GIGWA_URL` (defaults to
 the public ICARDA instance). **`gigwa-import-and-qc`** additionally needs write access —
 set `GIGWA_USER` / `GIGWA_PASS`.
 
@@ -44,6 +45,7 @@ skills/
   gigwa-qc-triage/         SKILL.md  references/qc-thresholds.md
   gigwa-explore-instance/  SKILL.md  references/instance-anatomy.md
   gigwa-region-scan/       SKILL.md  references/region-queries.md
+  gigwa-group-filtering/   SKILL.md  references/group-filtering.md
 ```
 
 Each skill's `name` (in `SKILL.md`) equals its folder name; deeper domain notes live one

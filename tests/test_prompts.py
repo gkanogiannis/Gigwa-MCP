@@ -13,6 +13,7 @@ EXPECTED_PROMPTS = {
     "qc_triage",
     "explore_instance",
     "region_scan",
+    "group_filtering",
 }
 EXPECTED_RESOURCES = {
     "catalog://tools",

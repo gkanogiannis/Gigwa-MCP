@@ -7,15 +7,17 @@ without pulling a whole variant set through the analysis layer.
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from pathlib import Path
 
 import pandas as pd
 
-from ..analysis.genotypes import parse_region
 from ..analysis.results import resolve_output_dir, write_csv
 from ..exports import ExportSelection
+from .. import subsets
 from ..server import get_client, mcp, progress_tool
+from .groups import build_selection
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
@@ -34,7 +36,20 @@ def _variant_row(v: dict) -> dict:
     }
 
 
-@mcp.tool()
+def _selection_args(
+    client, variant_set_db_id, *, reference_name=None, start=None, end=None, region=None,
+    selected_variant_types=None, group_filters_json=None, min_maf=None, max_maf=None,
+    max_missing_data=None, min_het=None, max_het=None,
+):
+    return build_selection(
+        client, variant_set_db_id, region=region, reference_name=reference_name, start=start,
+        end=end, selected_variant_types=selected_variant_types,
+        group_filters_json=group_filters_json, min_maf=min_maf, max_maf=max_maf,
+        max_missing_data=max_missing_data, min_het=min_het, max_het=max_het,
+    )[0]
+
+
+@progress_tool()
 def count_variants(
     variant_set_db_id: str,
     reference_name: str | None = None,
@@ -43,16 +58,37 @@ def count_variants(
     min_maf: float | None = None,
     max_maf: float | None = None,
     max_missing_data: float | None = None,
+    min_het: float | None = None,
+    max_het: float | None = None,
+    group_filters_json: str | list | None = None,
+    subset: str | None = None,
 ) -> str:
     """Count variants matching filters, computed server-side (nothing is downloaded).
 
     Fast way to size a query before pulling data. Filter by genomic region
-    (``reference_name`` + optional ``start``/``end``, from ``list_sequences``), minor-
-    allele frequency (``min_maf``/``max_maf``) and/or ``max_missing_data`` (0–1 fraction).
-    With no filters this returns the total variant count of the set. ``variant_set_db_id``
-    is a BrAPI variantSetDbId (from ``list_variant_sets`` / ``list_content``).
+    (``reference_name`` + optional ``start``/``end``, from ``list_sequences``), and by
+    genotype statistics evaluated by Gigwa: either for the whole population (``min_maf``/
+    ``max_maf``, ``max_missing_data``, ``min_het``/``max_het`` -- 0-1 fractions) or per
+    group via ``group_filters_json`` (see ``define_variant_subset``). With no filters this
+    returns the total variant count of the set. ``subset`` instead re-counts a subset made
+    with ``define_variant_subset``. ``variant_set_db_id`` is a BrAPI variantSetDbId (from
+    ``list_variant_sets`` / ``list_content``).
     """
     client = get_client()
+    if subset:
+        sub = subsets.get_subset(client, subset, variant_set_db_id)
+        n = subsets.run_with_subset(
+            client, sub, lambda token: client.count_selection(sub.selection, token=token)
+        )
+        return f"{n} variant(s) in subset '{sub.name}':\n{sub.selection.describe()}"
+    if group_filters_json or min_het is not None or max_het is not None:
+        selection = _selection_args(
+            client, variant_set_db_id, reference_name=reference_name, start=start, end=end,
+            group_filters_json=group_filters_json, min_maf=min_maf, max_maf=max_maf,
+            max_missing_data=max_missing_data, min_het=min_het, max_het=max_het,
+        )
+        n = client.count_selection(selection)
+        return f"{n} variant(s) match in {selection.describe()}"
     n = client.count_variants(
         variant_set_db_id,
         reference_name=reference_name,
@@ -85,30 +121,63 @@ def search_variants(
     min_maf: float | None = None,
     max_maf: float | None = None,
     max_missing_data: float | None = None,
+    min_het: float | None = None,
+    max_het: float | None = None,
+    group_filters_json: str | list | None = None,
+    subset: str | None = None,
+    page: int = 0,
     max_variants: int = 100000,
     output_dir: str | None = None,
 ) -> str:
     """Search variants matching filters server-side and write the matching list to CSV.
 
-    Same filters as ``count_variants`` (region / MAF / missing-data). Returns variant
-    metadata only (id, chrom, pos, ref, alt) — no genotypes are fetched — and writes
-    ``variant_search.csv``. Use ``count_variants`` first to size the result; ``max_variants``
-    caps how many are retrieved. For downstream genotype analysis on a filtered subset, use
-    the ``region``/``min_maf`` options on the QC/diversity tools instead.
+    Same filters as ``count_variants`` (region / MAF / missing-data / heterozygosity, flat
+    or per group). Returns variant metadata only (id, chrom, pos, ref, alt) — no genotypes
+    are fetched — and writes ``variant_search.csv``. Use ``count_variants`` first to size
+    the result; ``max_variants`` caps how many are retrieved.
+
+    With ``subset`` (from ``define_variant_subset``) the variants are paged straight out
+    of the result Gigwa already holds for that subset -- nothing is re-filtered. Pages are
+    ``min(1000, max_variants)`` variants; ``page`` starts reading at that page and the reply
+    says which page to ask for next, so a large subset can be walked in several calls (keep
+    ``max_variants`` unchanged between them). Filtering on genotype statistics without
+    ``subset`` registers the result as a new subset, so it can be paged the same way.
+    Any MAF bound restricts the search to bi-allelic variants (Gigwa only defines MAF there).
     """
     client = get_client()
-    variants = client.search_variants(
-        variant_set_db_id,
-        reference_name=reference_name,
-        start=start,
-        end=end,
-        min_maf=min_maf,
-        max_maf=max_maf,
-        max_missing_data=max_missing_data,
-        max_variants=max_variants,
+    next_page = warning = None
+    label = variant_set_db_id
+    genotype_filtered = any(
+        v is not None for v in (min_maf, max_maf, max_missing_data, min_het, max_het)
     )
+    if subset or group_filters_json or genotype_filtered:
+        if subset:
+            sub = subsets.get_subset(client, subset, variant_set_db_id)
+        else:
+            selection = _selection_args(
+                client, variant_set_db_id, reference_name=reference_name, start=start, end=end,
+                group_filters_json=group_filters_json, min_maf=min_maf, max_maf=max_maf,
+                max_missing_data=max_missing_data, min_het=min_het, max_het=max_het,
+            )
+            sub, _ = subsets.create_subset(client, selection)
+        label = f"subset '{sub.name}' ({sub.count} variant(s) in total)"
+        variants, next_page, warning = subsets.browse_subset(
+            client, sub, first_page=page, page_size=min(1000, max(1, max_variants)),
+            max_variants=max_variants,
+        )
+    else:
+        variants = client.search_variants(
+            variant_set_db_id,
+            reference_name=reference_name,
+            start=start,
+            end=end,
+            min_maf=min_maf,
+            max_maf=max_maf,
+            max_missing_data=max_missing_data,
+            max_variants=max_variants,
+        )
     if not variants:
-        return f"No variants matched the filters in {variant_set_db_id}."
+        return f"No variants matched the filters in {label}."
 
     df = pd.DataFrame(_variant_row(v) for v in variants)
     out = resolve_output_dir(variant_set_db_id, output_dir)
@@ -116,10 +185,16 @@ def search_variants(
 
     by_chrom = df["chrom"].value_counts().head(10).to_dict()
     chrom_line = ", ".join(f"{c}={n}" for c, n in by_chrom.items()) or "(none)"
+    more = (
+        f"\nMore variants remain: call again with subset=\"{sub.name}\", page={next_page}"
+        f"{'' if max_variants == 100000 else f', max_variants={max_variants}'} "
+        "(keep max_variants unchanged: it also sets the page size)."
+        if next_page is not None else ""
+    )
     return (
-        f"Found {len(df)} variant(s) in {variant_set_db_id}\n"
+        f"Found {len(df)} variant(s) in {label}\n"
         f"By sequence (top 10): {chrom_line}\n"
-        f"File: {path}"
+        f"File: {path}{more}" + (f"\n⚠ {warning}" if warning else "")
     )
 
 
@@ -210,6 +285,10 @@ def export_genotypes(
     min_maf: float | None = None,
     max_maf: float | None = None,
     max_missing_data: float | None = None,
+    min_het: float | None = None,
+    max_het: float | None = None,
+    group_filters_json: str | list | None = None,
+    subset: str | None = None,
     individuals: list[str] | None = None,
     metadata_fields: list[str] | None = None,
     keep_on_server: bool = False,
@@ -223,12 +302,16 @@ def export_genotypes(
     ``FLAPJACK``; availability varies by build — check ``list_export_formats`` for what
     this instance actually offers, and each format's variant-type/ploidy restrictions).
 
-    Passing any of ``region``, ``selected_variant_types``, ``min_maf``/``max_maf``,
-    ``max_missing_data``, ``individuals`` or ``metadata_fields`` instead drives Gigwa's
-    selection-aware export — the same endpoint the Gigwa web UI uses for a filtered
-    download — which additionally accepts any format the server advertises, including the
-    bgzipped ``"VCF.gz"``. ``keep_on_server`` leaves a copy in the user's Gigwa temp-output
-    area after this downloads it (default False).
+    Passing any of ``region``, ``selected_variant_types``, the genotype thresholds
+    (``min_maf``/``max_maf``, ``max_missing_data``, ``min_het``/``max_het``, or per group
+    in ``group_filters_json``), ``subset``, ``individuals`` or ``metadata_fields`` instead
+    drives Gigwa's selection-aware export — the same endpoint the Gigwa web UI uses for a
+    filtered download — which additionally accepts any format the server advertises,
+    including the bgzipped ``"VCF.gz"``. ``subset`` exports a subset made with
+    ``define_variant_subset`` (Gigwa reuses the result it already holds); its groups'
+    members are the exported individuals/samples unless ``individuals`` says otherwise, and
+    group names become population labels in formats that carry them. ``keep_on_server``
+    leaves a copy in the user's Gigwa temp-output area after this downloads it (default False).
 
     For large sets this can take a while; raise ``timeout`` (seconds), or set
     ``wait=False`` to return immediately once the export is kicked off instead of blocking
@@ -245,28 +328,57 @@ def export_genotypes(
 
     filtered = any([
         region, selected_variant_types, min_maf is not None, max_maf is not None,
-        max_missing_data is not None, individuals, metadata_fields, keep_on_server,
+        max_missing_data is not None, min_het is not None, max_het is not None,
+        group_filters_json, subset, individuals, metadata_fields, keep_on_server,
     ])
-    chrom, start, end = parse_region(region) if region else (None, None, None)
+
+    sub = None
+    if subset:
+        if any([region, selected_variant_types, min_maf is not None, max_maf is not None,
+                max_missing_data is not None, min_het is not None, max_het is not None,
+                group_filters_json]):
+            raise ValueError(
+                "subset already carries its filters; do not combine it with region, "
+                "selected_variant_types, thresholds or group_filters_json."
+            )
+        sub = subsets.get_subset(client, subset, variant_set_db_id)
+        variant_selection = sub.selection
+    else:
+        variant_selection = _selection_args(
+            client, variant_set_db_id, region=region,
+            selected_variant_types=selected_variant_types, group_filters_json=group_filters_json,
+            min_maf=min_maf, max_maf=max_maf, max_missing_data=max_missing_data,
+            min_het=min_het, max_het=max_het,
+        )
+    exported = individuals if individuals else (
+        variant_selection.exported_members() if variant_selection.groups else None
+    )
+    selection = ExportSelection(
+        fmt=format,
+        reference_name=variant_selection.reference_name,
+        start=variant_selection.start,
+        end=variant_selection.end,
+        selected_variant_types=variant_selection.selected_variant_types,
+        groups=variant_selection.groups,
+        work_with_samples=variant_selection.work_with_samples,
+        exported_individuals=exported,
+        metadata_fields=metadata_fields,
+        keep_on_server=keep_on_server,
+    )
+
+    def run(operation):
+        if sub is None:
+            return operation(selection)
+        return subsets.run_with_subset(
+            client, sub, lambda token: operation(dataclasses.replace(selection, token=token))
+        )
 
     if not wait:
-        result = client.start_export_result(
-            variant_set_db_id,
-            selection=ExportSelection(
-                fmt=format,
-                reference_name=chrom,
-                start=start,
-                end=end,
-                selected_variant_types=selected_variant_types,
-                min_maf=min_maf,
-                max_maf=max_maf,
-                max_missing_data=max_missing_data,
-                exported_individuals=individuals,
-                metadata_fields=metadata_fields,
-                keep_on_server=keep_on_server,
-            ),
-            immediate_dest_path=dest,
-        )
+        result = run(lambda sel: client.start_export_result(
+            variant_set_db_id, selection=sel, immediate_dest_path=dest
+        ))
+        if sub is not None and result.completed_path is None:
+            sub.async_export = True  # never drop its collection while Gigwa still exports it
         if result.completed_path is not None:
             size = result.completed_path.stat().st_size
             media = f"; media type {result.media_type}" if result.media_type else ""
@@ -275,52 +387,49 @@ def export_genotypes(
                 f"({size:,} bytes{media}); no progress polling or fetch is needed."
             )
         export_url = result.download_url
+        # Gigwa tracks one "current export" per token, not per session -- if another
+        # export (concurrent, or a still-running retry) shares the default token,
+        # get_export_progress()'s no-argument fallback would report *that* one's
+        # status instead of this one's. Passing export_token pins the check to this
+        # specific export.
         return (
             f"Export started for {variant_set_db_id} as {format} (not waiting).\n"
-            f"Check status with get_export_progress().\n"
+            f'Check status with get_export_progress(export_token="{result.token}").\n'
             f'Once complete: fetch_export_file(download_url="{export_url}", output_path="{output_path}").'
         )
 
     if filtered:
-        written = client.export_selection(
-            variant_set_db_id,
-            dest,
-            fmt=format,
-            reference_name=chrom,
-            start=start,
-            end=end,
-            selected_variant_types=selected_variant_types,
-            min_maf=min_maf,
-            max_maf=max_maf,
-            max_missing_data=max_missing_data,
-            exported_individuals=individuals,
-            metadata_fields=metadata_fields,
-            keep_on_server=keep_on_server,
-            timeout=timeout,
-        )
+        written = run(lambda sel: client.exports.export_and_wait(
+            variant_set_db_id, dest, sel, timeout=timeout
+        ))
     else:
         written = client.export_data(variant_set_db_id, dest, fmt=format, timeout=timeout)
 
     size = written.stat().st_size if written.is_file() else 0
-    detail = (
-        f"\nFilters: region={region or 'all'}, types={selected_variant_types or 'all'}, "
-        f"individuals={len(individuals) if individuals else 'all'}"
-        if filtered else ""
-    )
+    detail = ""
+    if filtered:
+        who = len(exported) if exported else "all"
+        detail = (
+            f"\nSelection: {'subset ' + repr(sub.name) + ' — ' if sub else ''}"
+            f"{variant_selection.describe()}\nExported {'samples' if variant_selection.work_with_samples else 'individuals'}: {who}"
+        )
     return f"Exported {variant_set_db_id} as {format} -> {written} ({size:,} bytes).{detail}"
 
 
 @mcp.tool()
-def get_export_progress() -> str:
-    """Report the status of the current session's most recent export (started with
-    ``export_genotypes(..., wait=False)``).
+def get_export_progress(export_token: str | None = None) -> str:
+    """Report the status of an export started with ``export_genotypes(..., wait=False)``.
 
-    Unlike imports, an export isn't tracked by a token you pass around — Gigwa ties it to
-    the session's own auth token, so there is exactly one "current export" per connection
-    and this takes no arguments.
+    Gigwa tracks one "current export" *per token*, not per session -- so if more than
+    one export might be in flight at once (a deliberate concurrent run, or simply a
+    retry issued before an earlier attempt's server-side thread actually finished),
+    checking with no argument is ambiguous: it falls back to this session's shared
+    token, which could belong to any of them. Pass the ``export_token`` that
+    ``export_genotypes(..., wait=False)`` returned to check that *specific* export;
+    omit it only when you know just one export is in play.
     """
     client = get_client()
-    status = client.export_progress()
+    status = client.export_progress(token=export_token)
     if status is None:
         return "No export progress reported (none started this session, or it already finished)."
     if status.error:
@@ -332,7 +441,7 @@ def get_export_progress() -> str:
     return f"Export in progress: {status.summary()}"
 
 
-@mcp.tool()
+@progress_tool()
 def fetch_export_file(download_url: str, output_path: str) -> str:
     """Download a completed export — the URL ``export_genotypes(..., wait=False)`` returned
     — once ``get_export_progress`` reports it complete."""

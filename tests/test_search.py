@@ -346,7 +346,8 @@ def test_abort_calls_abort_process():
     assert client.abort("import::u::xyz") is True
     assert seen["method"] == "DELETE"  # GET/POST return HTTP 500 on the live server
     assert seen["path"].endswith("/gigwa/abortProcess")
-    assert seen["params"]["processID"] == "import::u::xyz"
+    assert seen["params"]["progressToken"] == "import::u::xyz"  # the parameter Gigwa reads
+    assert seen["params"]["processID"] == "import::u::xyz"  # older builds
 
 
 def test_get_germplasm_falls_back_to_get_listing():
@@ -408,3 +409,38 @@ def test_filter_individuals_by_metadata_sends_filters():
     recs = client.filter_individuals_by_metadata("MOD", {"GroupK4": ["cA"]})
     assert [r["id"] for r in recs] == ["21", "34"]
     assert captured["body"] == {"GroupK4": ["cA"]}
+
+
+def test_genotype_filtered_count_uses_fresh_token_and_surfaces_gigwa_refusal():
+    import json
+
+    import pytest
+
+    from gigwa_mcp.errors import GigwaAPIError
+
+    tokens = iter(["fresh1", "fresh2"])
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/generateToken"):
+            return httpx.Response(201, json={"token": next(tokens)})
+        if request.url.path.endswith("/progress"):
+            seen["progress_token"] = request.url.params.get("progressToken")
+            return httpx.Response(200, json={"error": "MAF is only supported on biallelic data!"})
+        seen["auth"] = request.headers["authorization"]
+        seen["body"] = json.loads(request.read().decode())
+        return httpx.Response(200, json={"count": 0})
+
+    client = make_client(handler)
+    with pytest.raises(GigwaAPIError, match="MAF is only supported on biallelic data"):
+        client.count_variants("MOD§1§run1", min_maf=0.05)
+    # A fresh token, not the session one: a refused count poisons its token's next counts.
+    assert seen["auth"] == "Bearer fresh1"
+    assert seen["progress_token"] == seen["auth"].removeprefix("Bearer ")
+    assert seen["body"]["alleleCount"] == "2"
+
+
+def test_plain_count_of_zero_is_not_an_error():
+    client = make_client(_token_or(lambda r: httpx.Response(200, json={"count": 0})
+                                   if not r.url.path.endswith("/progress") else httpx.Response(204)))
+    assert client.count_variants("MOD§1§run1", reference_name="chrX") == 0
